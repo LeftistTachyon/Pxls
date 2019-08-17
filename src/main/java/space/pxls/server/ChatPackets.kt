@@ -26,18 +26,50 @@ data class ServerChatCooldown(val diff: Int, val message: String) {
     val type = "message_cooldown";
 }
 
+/**
+ * A data class that represents a server chat ban
+ *
+ * @param permanent whether the ban is permanent
+ * @param expiry how long it will take to expire
+ * @property type a descriptor for this class's action
+ */
 data class ServerChatBan(val permanent: Boolean, val expiry: Long?) {
     val type = "chat_ban"
 }
 
+/**
+ * A data class that represents the state for a server chat ban (?) or a chat ban (state) (?)
+ *
+ * @param permanent whether the ban is permanent
+ * @param expiry how long it will take to expire
+ * @property type a descriptor for this class's action
+ */
 data class ServerChatbanState(val permanent: Boolean, val expiry: Long?) {
     val type = "chat_ban_state"
 }
 
+/**
+ * A data class with a target, initiator, amount (?), and a possible reason
+ *
+ * @param target the target of the purge
+ * @param initiator the initiator of the purge
+ * @param amount the amount of messages purged (?)
+ * @param reason the reason for the purge, possibly null
+ * @property type a descriptor for this class's action
+ */
 data class ServerChatPurge(val target: String, val initiator: String, val amount: Int, val reason: String?) {
     val type = "chat_purge"
 }
 
+/**
+ * A data class with a target, initiator, "nonces" (whatever that means), and possibly a reason.
+ *
+ * @param target the target of the purge
+ * @param initiator the initiator of the purge
+ * @param nonces a list of Strings for something?
+ * @param reason a possibly null String that bears a reason for purge
+ * @property type a descriptor for this class's action
+ */
 data class ServerChatSpecificPurge(val target: String, val initiator: String, val nonces: List<String>, val reason: String?) {
     val type = "chat_purge_specific"
 }

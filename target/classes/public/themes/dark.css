@@ -1,0 +1,168 @@
+/* TODO: Add sections, like in style.css */
+
+html, body {
+    background-color: #222;
+}
+
+kbd {
+    border: 1px solid #333;
+    background-color: #444;
+    color: #fff;
+}
+
+.message {
+    background-color: #333;
+    color: #eee;
+}
+
+.message select, .message textarea, .message input {
+    border: 2px solid #333;
+    background-color: #222;
+    color: #eee;
+}
+
+.button {
+    background-color: #bbb;
+}
+
+.button:hover {
+    border: 1px solid #844;
+}
+
+#lookup {
+    border: 1px solid #222;
+    background-color: #333;
+}
+
+#lookup .content {
+    color: #eee;
+}
+
+#lookup .content input {
+    border: 1px solid #333;
+    background-color: #222;
+    color: #eee;
+}
+
+#lookup .report-button {
+    border: 1px solid #333;
+}
+
+.drawer button {
+    border: 2px solid #333;
+    background-color: #555;
+    color: #eee;
+}
+
+.drawer select {
+    border: 2px solid #333;
+    background-color: #222;
+    color: #eee;
+}
+
+.palette-overlay {
+    background-color: rgba(0, 0, 0, 0.9);
+    color: #eee;
+}
+
+#palette {
+    background-color: rgba(0, 0, 0, 0.5);
+}
+
+.palette-color.deselect-button {
+    color: #DDD;
+}
+
+#undo {
+    background-image: linear-gradient(to top, #0000007F, #000);
+    color: #fff;
+}
+
+input[type="text"], textarea {
+    border: 1px solid #333;
+    background-color: #222;
+    color: #eee;
+}
+
+/* Text Colors */
+
+.text-red {
+    color: #f44;
+}
+
+/* Panels */
+
+header {
+    background-image: linear-gradient(to bottom, #444, #333);
+}
+
+aside.panel {
+    background-color: #333;
+    color: #eee;
+}
+
+/* Chat */
+
+ul.chat-body li.chat-line {
+    border-bottom: 1px solid #4f4f4f;
+}
+
+ul.chat-body li.chat-line:nth-child(odd) {
+    background: #3f3f3f;
+}
+
+ul.chat-body li.chat-line.server-action {
+    color: #9f9f9f;
+}
+
+.popup {
+    background: #333;
+    color: #ccc;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid #000;
+}
+
+.panels-wrapper .chat-timestamp-header {
+    color: #666;
+}
+
+.panels-wrapper ul.actions-list li[data-action] {
+    background-image: linear-gradient(0,#333,#3f3f3f,#333);
+}
+
+.panels-wrapper ul.actions-list li[data-action]:hover {
+    background-image: linear-gradient(0,#2a2a2a,#3a3a3a,#2a2a2a);
+}
+
+/* Admin */
+
+.admin input {
+    border: 1px solid #333;
+    background-color: #222;
+}
+
+.admin-check {
+    border: 1px solid #222 !important;
+    background-color: #333 !important;
+}
+
+.admin-check div:not(.button) {
+    color: #eee;
+}
+
+.admin-check input {
+    border: 1px solid #333;
+    background-color: #222;
+    color: #eee;
+}
+
+/* Mobile */
+
+@media (max-width: 768px) {
+    .drawer-content > div:not(.close) {
+        border: 1px solid #444;
+    }
+}
