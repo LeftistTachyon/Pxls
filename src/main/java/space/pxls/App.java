@@ -62,7 +62,7 @@ public class App {
         shadowbannedPixelLogger = LogManager.getLogger("ShadowbannedPixels");
         appLogger = LogManager.getLogger("App");
 
-	canvasCode = config.getString("canvascode");
+	    canvasCode = config.getString("canvascode");
 
         width = config.getInt("board.width");
         height = config.getInt("board.height");
@@ -707,10 +707,9 @@ public class App {
             byte b = raf.readByte();
             raf.close();
             return b;
-        } catch (NoSuchFileException e) {
         } catch (IOException e) {
+            return (byte) config.getInt("board.defaultColor");
         }
-        return (byte) config.getInt("board.defaultColor");
     }
 
     public static Database getDatabase() {
