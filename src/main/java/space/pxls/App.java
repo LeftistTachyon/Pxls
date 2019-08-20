@@ -377,6 +377,38 @@ public class App {
                 System.out.println("Working... (may cause some lag)");
                 userManager.reload();
                 System.out.println("Done.");
+            } else if (token[0].equalsIgnoreCase("flagRename")) {
+                //flagRename USERNAME [1|0]
+                if (token.length >= 2) {
+                    boolean flagState = token.length < 3 || (token[2].equalsIgnoreCase("1") || token[2].equalsIgnoreCase("true") || token[2].equalsIgnoreCase("yes") || token[2].equalsIgnoreCase("y"));
+                    User toFlag = userManager.getByName(token[1]);
+                    if (toFlag != null) {
+                        System.out.printf("Flagging %s as %s%n", toFlag.getName(), flagState);
+                        toFlag.setRenameRequested(flagState);
+                    } else {
+                        System.out.println("User doesn't exist");
+                    }
+                } else {
+                    System.out.println("flagRename USERNAME [1|0]");
+                }
+            } else if (token[0].equalsIgnoreCase("setName") || token[0].equalsIgnoreCase("updateUsername")) {
+                //setName USERNAME NEW_USERNAME
+                if (token.length >= 3) {
+                    User toRename = userManager.getByName(token[1]);
+                    if (toRename != null) {
+                        toRename.setRenameRequested(false);
+                        if (toRename.updateUsername(token[2], true)) {
+                            App.getServer().send(toRename, new ServerRenameSuccess(toRename.getName()));
+                            System.out.println("Name udpated");
+                        } else {
+                            System.out.println("Failed to update name (function returned false. name taken or an error occurred)");
+                        }
+                    } else {
+                        System.out.println("User doesn't exist");
+                    }
+                } else {
+                    System.out.printf("%s USERNAME NEW_USERNAME%n", token[0]);
+                }
             }
         } catch (RuntimeException e) {
             e.printStackTrace();
