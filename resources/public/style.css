@@ -44,8 +44,10 @@ html, body {
     display: none !important;
 }
 
-a, a:hover, a:visited, a:active {
+a, a:hover, a:visited, a:active, .link, .link:hover, .link:active {
     color: inherit;
+    cursor: pointer;
+    text-decoration: underline;
 }
 
 kbd {
@@ -91,6 +93,7 @@ kbd {
 .alertLocationWrapper {
     max-width: 100% !important;
 }
+
 .alertLocationWrapper > input[type='text'] {
     width: 100% !important;
     margin-bottom: 2px;
@@ -1052,21 +1055,25 @@ body.panel-left-open .ui-bar {
     transition: width ease-out .25s;
 }
 
+body.panel-left-open.panel-right-open .ui-bar {
+    left: 30%;
+    width: 40%;
+}
+
 /* CHAT */
 
 .chat-wrapper {
-    display: flex;
-    flex-flow: column;
+    display: block;
     height: 99%;
 }
 
 .chat-wrapper ul.chat-body {
-    flex: 1;
     overflow: auto;
+    overflow-x: hidden;
     margin: 0;
     padding: 0;
     list-style: none;
-    overflow-x: hidden;
+    height: calc(100% - 3rem);
 }
 
 ul.chat-body li.chat-line {
@@ -1159,14 +1166,21 @@ li.chat-line .actions [data-action]:not(:last-of-type):not(:only-child) {
 }
 
 .chat-wrapper .chat-controls {
-    flex-basis: 3rem;
+    height: 3rem;
+    position: absolute;
+    bottom: 5px;
+    width: calc(100% - 16px);
 }
 
 .chat-wrapper .chat-hints {
-    padding: .5rem;
     font-family: monospace;
-    font-size: 1.2rem;
+    font-size: 1.3rem;
     font-weight: bold;
+    position: absolute;
+    bottom: 3.5rem;
+    width: calc(100% - 16px);
+    background-color: #555d;
+    color: #ff8c00;
 }
 
 .chat-wrapper .chat-controls textarea {
