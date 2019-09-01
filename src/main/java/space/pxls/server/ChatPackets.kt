@@ -5,6 +5,11 @@ data class Badge(val displayName: String, val tooltip: String, val type: String,
 data class ChatMessage(val nonce: String, val author: String, val date: Long, val message_raw: String, val badges: List<Badge>? = null/*, val message_parsed: String*/)
 
 /* Sent by the client to the server */
+/**
+ * A data class that represents a chat message sent by a client. This packet travels from the client to the server.
+ *
+ * @param message the contents of the message
+ */
 data class ClientChatMessage(val message: String)
 class ClientChatHistory()
 class ClientChatbanState()
