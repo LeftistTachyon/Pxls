@@ -90,11 +90,11 @@ kbd {
     text-indent: 0.75em;
 }
 
-.alertLocationWrapper {
+.longTextInputWrapper {
     max-width: 100% !important;
 }
 
-.alertLocationWrapper > input[type='text'] {
+.longTextInputWrapper > input[type='text'] {
     width: 100% !important;
     margin-bottom: 2px;
 }
@@ -1225,6 +1225,36 @@ li.chat-line .actions [data-action]:not(:last-of-type):not(:only-child) {
     font-size: .9em;
     color: #888;
     text-decoration: line-through;
+}
+
+/* PINGS */
+
+.chat-line.has-ping {
+    background-color: #feedd1 !important;
+}
+
+.panel-trigger[data-panel=chat] {
+    position: relative;
+}
+
+.panel-trigger[data-panel=chat] .ping-counter {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    transform: translateY(-55%) translateX(-45%);
+    padding: 1px 5px;
+    border-radius: 5px;
+    font-size: 1rem;
+    font-weight: bold;
+    color: #ffa500;
+}
+
+.panel-trigger[data-panel=chat]:not(.has-ping) .ping-counter {
+    display: none;
+}
+
+.panel-trigger[data-panel=chat].has-ping {
+    margin-left: 6px;
 }
 
 /* CHAT ACTIONS POPUP */

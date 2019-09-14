@@ -2206,6 +2206,10 @@ window.App = (function () {
                         if (data) {
                             return $.map(self.hooks, function (hook) {
                                 const get = hook.get(data);
+                                if (get == null) {
+                                	return null;
+                                }
+
                                 const value = typeof get === "object" ? get : $("<span>").text(get);
 
                                 let _retVal = $("<div data-sensitive=\"" + hook.sensitive + "\">").append(
@@ -2320,6 +2324,10 @@ window.App = (function () {
                             id: "pixels_alltime",
                             name: "Alltime Pixels",
                             get: data => data.pixel_count_alltime,
+                        }, {
+                            id: "discord_name",
+                            name: "Discord",
+                            get: data => data.discordName,
                         }
                     );
 
@@ -2500,7 +2508,8 @@ window.App = (function () {
                     rangeAlertVolume: $("#rangeAlertVolume"),
                     lblAlertVolume: $("#lblAlertVolume"),
                     btnForceAudioUpdate: $("#btnForceAudioUpdate"),
-                    themeSelect: $("#themeSelect")
+                    themeSelect: $("#themeSelect"),
+                    txtDiscordName: $("#txtDiscordName"),
                 },
                 themes: [
                     {
@@ -2512,6 +2521,7 @@ window.App = (function () {
                     self._initThemes();
                     self._initStack();
                     self._initAudio();
+                    self._initAccount();
                     var useMono = ls.get("monospace_lookup")
                     if (typeof useMono === 'undefined') {
                         ls.set("monospace_lookup", true);
@@ -2574,6 +2584,16 @@ window.App = (function () {
                             ls.set("enableNumberedPalette", this.checked === true);
                             place.setNumberedPaletteEnabled(this.checked === true);
                         });
+
+                    const numOrDefault = (n, def) => isNaN(n) ? def : n
+                    const colorBrightnessLevel = numOrDefault(parseFloat(ls.get("colorBrightness")), 1)
+                    $("#color-brightness").val(colorBrightnessLevel)
+                    self.adjustColorBrightness(colorBrightnessLevel)
+                    $("#color-brightness").change((e) => {
+                        const level = parseFloat(e.target.value);
+                        ls.set("colorBrightness", level);
+                        self.adjustColorBrightness(level)
+                    });
 
                     $(window).keydown(function (evt) {
                         switch (evt.key || evt.which) {
@@ -2703,6 +2723,44 @@ window.App = (function () {
                         self.elements.txtAlertLocation.val("");
                     });
                 },
+                _initAccount: function() {
+                    self.elements.txtDiscordName.keydown(function (evt) {
+                        if (evt.key == "Enter" || evt.which === 13) {
+                                self.handleDiscordNameSet();
+                        }
+                        evt.stopPropagation();
+                    });
+                    $("#btnDiscordNameSet").click(() => {
+                        self.handleDiscordNameSet()
+                    });
+                    $("#btnDiscordNameRemove").click(() => {
+                        self.setDiscordName("")
+                        self.handleDiscordNameSet()
+                    });
+                },
+                handleDiscordNameSet() {
+                    const name = self.elements.txtDiscordName.val();
+
+                    //TODO confirm with user
+                    $.post({
+                        type: "POST",
+                        url: "/setDiscordName",
+                        data: {
+                            discordName: name
+                        },
+                        success: function () {
+                            alert.show("Discord name updated successfully");
+                        },
+                        error: function (data) {
+                            let err = data.responseJSON && data.responseJSON.details ? data.responseJSON.details : data.responseText;
+                            if (data.status === 200) { // seems to be caused when response body isn't json? just show whatever we can and trust server sent good enough details.
+                                alert.show(err);
+                            } else {
+                                alert.show("Couldn't change discord name: " + err);
+                            }
+                        }
+                    });
+                },
                 updateAudio: function (url) {
                     try {
                         if (!url) url = "notify.wav";
@@ -2724,6 +2782,17 @@ window.App = (function () {
                 setPlaceableText(placeable) {
                     self.elements.stackCount.text(`${placeable}/${self.maxStacked}`);
                 },
+                setDiscordName(name) {
+                    self.elements.txtDiscordName.val(name);
+                },
+                adjustColorBrightness(level) {
+                    $([
+                        "#board-container",
+                        "#cursor",
+                        "#reticule",
+                        "#palette .palette-color"
+                    ].join(", ")).css("filter", `brightness(${level})`);
+                },
                 getAvailable() {
                     return self._available;
                 }
@@ -2736,6 +2805,7 @@ window.App = (function () {
                 getAvailable: self.getAvailable,
                 setPlaceableText: self.setPlaceableText,
                 setMax: self.setMax,
+                setDiscordName: self.setDiscordName,
                 updateAudio: self.updateAudio
             };
         })(),
@@ -2814,6 +2884,8 @@ window.App = (function () {
                 seenHistory: false,
                 stickToBottom: true,
                 repositionTimer: false,
+                pings: 0,
+                last_opened_panel: ls.get('chat.last_opened_panel') >> 0,
                 nonceLog: [],
                 chatban: {
                     banStart: 0,
@@ -2828,6 +2900,8 @@ window.App = (function () {
                 },
                 elements: {
                     message_icon: $("#message-icon"),
+                    panel_trigger: $(".panel-trigger[data-panel=chat]"),
+                    ping_counter: $("#ping-counter"),
                     input: $("#txtChatContent"),
                     body: $("#chat-body"),
                     rate_limit_overlay: $(".chat-ratelimit-overlay"),
@@ -3149,7 +3223,8 @@ window.App = (function () {
 
                     $(window).on("pxls:panel:opened", (e, which) => {
                         if (which === "chat") {
-                            self.elements.message_icon.removeClass('has-notification');
+                            ls.set('chat.last_opened_panel', new Date/1e3 >> 0);
+                            self.clearPings();
                             let lastN = self.elements.body.find("[data-nonce]").last()[0];
                             if (lastN) {
                                 ls.set("chat-last_seen_nonce", lastN.dataset.nonce);
@@ -3193,6 +3268,10 @@ window.App = (function () {
                         if (popup) popup.remove();
                     });
 
+                    if (ls.get('chat.pings-enabled') == null) {
+                        ls.set('chat.pings-enabled', true);
+                    }
+
                     $("#cbChatSettings24h").prop("checked", ls.get('chat.24h') === true)
                         .on('change', function(e) {
                             ls.set('chat.24h', !!this.checked);
@@ -3200,6 +3279,14 @@ window.App = (function () {
                     $("#cbChatSettingsBadgesToggle").prop("checked", ls.get('chat.text-icons-enabled') === true)
                         .on('change', function(e) {
                             ls.set('chat.text-icons-enabled', !!this.checked);
+                        });
+                    $("#cbChatSettingsPings").prop("checked", ls.get('chat.pings-enabled') === true)
+                        .on('change', function(e) {
+                            let isChecked = !!this.checked;
+                            ls.set('chat.pings-enabled', isChecked);
+                            if (!isChecked) {
+                                self.clearPings();
+                            }
                         });
 
                     if (ls.get("chat.font-size") == null) {
@@ -3227,6 +3314,11 @@ window.App = (function () {
                         let obj = self.elements.body[0];
                         self.stickToBottom = self._numWithinDrift(obj.scrollTop >> 0, obj.scrollHeight - obj.offsetHeight, 2);
                     });
+                },
+                clearPings: () => {
+                    self.elements.message_icon.removeClass('has-notification');
+                    self.elements.panel_trigger.removeClass('has-ping');
+                    self.pings = 0;
                 },
                 _numWithinDrift(needle, haystack, drift) {
                     return needle >= (haystack - drift) && needle <= (haystack + drift);
@@ -3278,6 +3370,7 @@ window.App = (function () {
                             }
                         }
                     }
+                    let hasPing = ls.get('chat.pings-enabled') === true && user.getUsername().toLowerCase() !== packet.author.toLowerCase() && packet.message_raw.toLowerCase().includes(`@${user.getUsername().toLowerCase()}`);
                     let when = moment.unix(packet.date);
                     let badges = crel('span', {'class': 'badges'});
                     if (Array.isArray(packet.badges)) {
@@ -3297,7 +3390,7 @@ window.App = (function () {
                     let contentSpan = self._processMessage(packet.message_raw);
 
                     self.elements.body.append(
-                        crel('li', {'data-nonce': packet.nonce, 'data-author': packet.author, 'data-date': packet.date, 'data-badges': JSON.stringify(packet.badges || []), 'class': 'chat-line'},
+                        crel('li', {'data-nonce': packet.nonce, 'data-author': packet.author, 'data-date': packet.date, 'data-badges': JSON.stringify(packet.badges || []), 'class': `chat-line${hasPing ? ' has-ping' : ''}`},
                             crel('span', {'class': 'actions'},
                                 crel('i', {'class': 'fas fa-cog', 'data-action': 'actions-panel', 'title': 'Actions', onclick: self._popUserPanel})
                             ),
@@ -3311,6 +3404,14 @@ window.App = (function () {
                             document.createTextNode(' ')
                         )
                     );
+
+                    if (hasPing) {
+                        if (!(panels.isOpen('chat') && self.stickToBottom || packet.date < self.last_opened_panel)) {
+                            ++self.pings;
+                            self.elements.panel_trigger.addClass('has-ping');
+                            // self.elements.ping_counter.text(self.pings);
+                        }
+                    }
                 },
                 _processMessage: str => {
                     let toReturn = crel('span', {'class': 'content'}, str);
@@ -3383,7 +3484,7 @@ window.App = (function () {
                                 }
                             }
 
-                            let anchor = crel('a', {'href': x.raw, 'title': x.raw}, anchorText);
+                            let anchor = crel('a', {'href': x.raw.indexOf(x.protocol) !== 0 ? `${x.protocol}${x.raw}` : x.raw, 'title': x.raw}, anchorText);
                             if (anchorTarget) anchor.target = anchorTarget;
 
                             str = str.replace(x.raw, anchor.outerHTML);
@@ -3902,7 +4003,8 @@ window.App = (function () {
             };
             return {
                 init: self.init,
-                _handleActionClick: self._handleActionClick
+                _handleActionClick: self._handleActionClick,
+                clearPings: self.clearPings,
             }
         })(),
         // this takes care of the countdown timer
@@ -4246,6 +4348,7 @@ window.App = (function () {
                         self.username = data.username;
                         self.loggedIn = true;
                         self.renameRequested = data.renameRequested;
+                        uiHelper.setDiscordName(data.discordName || "")
                         self.elements.loginOverlay.fadeOut(200);
                         self.elements.userInfo.find("span.name").text(data.username);
                         if (data.method == 'ip') {

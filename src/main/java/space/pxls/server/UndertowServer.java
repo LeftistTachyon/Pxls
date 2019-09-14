@@ -15,14 +15,13 @@ import io.undertow.websockets.spi.WebSocketHttpExchange;
 import space.pxls.App;
 import space.pxls.user.Role;
 import space.pxls.user.User;
-import space.pxls.util.AuthReader;
-import space.pxls.util.IPReader;
-import space.pxls.util.RateLimitingHandler;
-import space.pxls.util.RoleGate;
+import space.pxls.util.*;
 
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 public class UndertowServer {
@@ -33,6 +32,8 @@ public class UndertowServer {
 
     private Set<WebSocketChannel> connections;
     private Undertow server;
+
+    private ExecutorService userDupeIPExecutor = Executors.newFixedThreadPool(4);
 
     public UndertowServer(int port) {
         this.port = port;
@@ -58,6 +59,8 @@ public class UndertowServer {
                 .addPrefixPath("/users", webHandler::users)
                 .addPrefixPath("/auth", new RateLimitingHandler(webHandler::auth, "http:auth", (int) App.getConfig().getDuration("server.limits.auth.time", TimeUnit.SECONDS), App.getConfig().getInt("server.limits.auth.count")))
                 .addPrefixPath("/signup", new RateLimitingHandler(webHandler::signUp, "http:signUp", (int) App.getConfig().getDuration("server.limits.signup.time", TimeUnit.SECONDS), App.getConfig().getInt("server.limits.signup.count")))
+                .addPrefixPath("/setDiscordName", new RateLimitingHandler(webHandler::discordNameChange, "http:discordName", (int) App.getConfig().getDuration("server.limits.discordNameChange.time", TimeUnit.SECONDS), App.getConfig().getInt("server.limits.discordNameChange.count")))
+                .addPrefixPath("/setDiscordName", webHandler::discordNameChange)
                 .addPrefixPath("/admin/ban", new RoleGate(Role.TRIALMOD, webHandler::ban))
                 .addPrefixPath("/admin/unban", new RoleGate(Role.TRIALMOD, webHandler::unban))
                 .addPrefixPath("/admin/permaban", new RoleGate(Role.MODERATOR, webHandler::permaban))
@@ -106,6 +109,8 @@ public class UndertowServer {
                 agent = "";
             }
             user.setUseragent(agent);
+
+            userDupeIPExecutor.submit(new UserDupeIPTask(channel, user, ip)); //ip at this point should have gone through all the checks to extract an actual IP from behind a reverse proxy
         }
 
         channel.getReceiveSetter().set(new AbstractReceiveListener() {

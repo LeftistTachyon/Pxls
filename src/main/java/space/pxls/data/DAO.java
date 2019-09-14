@@ -7,6 +7,7 @@ import org.skife.jdbi.v2.sqlobject.customizers.RegisterMapper;
 
 import java.io.Closeable;
 import java.sql.Timestamp;
+import java.util.List;
 
 @RegisterMapper({DBUser.Mapper.class, DBPixelPlacement.Mapper.class, DBPixelPlacementUser.Mapper.class, DBUserBanReason.Mapper.class, DBUserPixelCount.Mapper.class, DBUserPixelCountAllTime.Mapper.class, DBBanlog.Mapper.class, DBChatMessage.Mapper.class})
 public interface DAO extends Closeable {
@@ -108,7 +109,7 @@ public interface DAO extends Closeable {
     @SqlQuery("SELECT *, users.* FROM pixels LEFT JOIN users ON pixels.who = users.id WHERE x = :x AND y = :y ORDER BY time DESC LIMIT 1")
     DBPixelPlacement getPixel(@Bind("x") int x, @Bind("y") int y);
 
-    @SqlQuery("SELECT pixels.id, pixels.x, pixels.y, pixels.color, pixels.time, users.username, users.pixel_count, users.pixel_count_alltime, users.login FROM pixels LEFT JOIN users ON pixels.who = users.id WHERE x = :x AND y = :y AND most_recent ORDER BY time DESC LIMIT 1")
+    @SqlQuery("SELECT pixels.id, pixels.x, pixels.y, pixels.color, pixels.time, users.username, users.pixel_count, users.pixel_count_alltime, users.login, users.discord_name FROM pixels LEFT JOIN users ON pixels.who = users.id WHERE x = :x AND y = :y AND most_recent ORDER BY time DESC LIMIT 1")
     DBPixelPlacementUser getPixelUser(@Bind("x") int x, @Bind("y") int y);
 
     @SqlQuery("SELECT *, users.* FROM pixels LEFT JOIN users on pixels.who = users.id WHERE pixels.id = :id")
@@ -128,6 +129,7 @@ public interface DAO extends Closeable {
             "ban_expiry TIMESTAMP," +
             "signup_ip VARBINARY(16)," +
             "last_ip VARBINARY(16)," +
+            "last_ip_alert TINYINT(1) NOT NULL DEFAULT 0," +
             "perma_chat_banned TINYINT(1) DEFAULT 0," +
             "chat_ban_expiry TIMESTAMP DEFAULT NOW()," +
             "chat_ban_reason TEXT," +
@@ -135,11 +137,18 @@ public interface DAO extends Closeable {
             "user_agent VARCHAR(512) NOT NULL DEFAULT ''," +
             "pixel_count INT UNSIGNED NOT NULL DEFAULT 0," +
             "pixel_count_alltime INT UNSIGNED NOT NULL DEFAULT 0," +
-            "is_rename_requested TINYINT NOT NULL DEFAULT 0)")
+            "is_rename_requested TINYINT NOT NULL DEFAULT 0," +
+            "discord_name VARCHAR(37) CHARACTER SET utf8mb4)")
     void createUsersTable();
 
     @SqlQuery("SELECT EXISTS(SELECT 1 FROM users WHERE (last_ip = INET6_ATON(:ip) OR signup_ip = INET6_ATON(:ip)) AND id <> :uid)")
     boolean haveDupeIp(@Bind("ip") String ip, @Bind("uid") int uid);
+
+    @SqlQuery("SELECT count(id) FROM users WHERE (last_ip = INET6_ATON(:ip) OR signup_ip = INET6_ATON(:ip)) AND id <> :uid")
+    int getDupedCount(@Bind("ip") String ip, @Bind("uid") int uid);
+
+    @SqlQuery("SELECT id FROM users WHERE (last_ip = INET6_ATON(:ip) OR signup_ip = INET6_ATON(:ip)) AND id <> :uid")
+    List<Integer> getDupedUsers(@Bind("ip") String ip, @Bind("uid") int uid);
 
     @SqlUpdate("UPDATE users SET cooldown_expiry = now() + INTERVAL :seconds SECOND WHERE id = :id")
     void updateUserTime(@Bind("id") int userId, @Bind("seconds") long sec);
@@ -189,6 +198,12 @@ public interface DAO extends Closeable {
     @SqlQuery("SELECT EXISTS(SELECT 1 FROM pixels WHERE x = :x AND y = :y AND who <> :who AND most_recent)")
     boolean shouldPixelTimeIncrease(@Bind("x") int x, @Bind("y") int y, @Bind("who") int who);
 
+    @SqlQuery("SELECT last_ip_alert FROM users WHERE id=:uid")
+    boolean hasUserFlaggedLastIPAlert(@Bind("uid") int user_id);
+
+    @SqlUpdate("UPDATE users SET last_ip_alert=:flagged WHERE id=:uid")
+    void setLastIPAlertFlag(@Bind("flagged") boolean isFlagged, @Bind("uid") int user_id);
+
     @SqlQuery("SELECT is_rename_requested FROM users WHERE id = :uid")
     boolean isRenameRequested(@Bind("uid") int who);
 
@@ -197,6 +212,9 @@ public interface DAO extends Closeable {
 
     @SqlUpdate("UPDATE users SET username = :name WHERE id = :uid")
     void updateUsername(@Bind("uid") int who, @Bind("name") String new_username);
+
+    @SqlUpdate("UPDATE users SET discord_name = :name WHERE id = :uid")
+    void setDiscordName(@Bind("uid") int who, @Bind("name") String discordName);
 
     @SqlUpdate("CREATE TABLE IF NOT EXISTS sessions ("+
             "id INT UNSIGNED NOT NULL PRIMARY KEY AUTO_INCREMENT,"+
@@ -278,8 +296,8 @@ public interface DAO extends Closeable {
             "  `nonce` varchar(36) PRIMARY KEY," +
             "  `author` int," +
             "  `sent` int(11) NOT NULL," +
-            "  `content` varchar(2048) character set utf8 NOT NULL," +
-            "  `filtered` varchar(2048) character set utf8 NOT NULL DEFAULT ''," +
+            "  `content` varchar(2048) character set utf8mb4 NOT NULL," +
+            "  `filtered` varchar(2048) character set utf8mb4 NOT NULL DEFAULT ''," +
             "  `purged` tinyint NOT NULL DEFAULT 0," +
             "  `purged_by` int" +
             " );")

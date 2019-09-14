@@ -7,7 +7,6 @@ import com.mashape.unirest.http.async.Callback;
 import com.mashape.unirest.http.exceptions.UnirestException;
 import com.typesafe.config.Config;
 import io.undertow.websockets.core.WebSocketChannel;
-import org.apache.commons.lang3.text.translate.AggregateTranslator;
 import org.apache.commons.lang3.text.translate.CharSequenceTranslator;
 import org.apache.commons.lang3.text.translate.LookupTranslator;
 import space.pxls.App;
@@ -18,9 +17,12 @@ import space.pxls.user.User;
 import space.pxls.util.ChatFilter;
 import space.pxls.util.PxlsTimer;
 import space.pxls.util.RateLimitFactory;
+import space.pxls.util.UserDupeIPTask;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import static org.apache.commons.lang3.StringEscapeUtils.escapeHtml4;
@@ -68,7 +70,8 @@ public class PacketHandler {
                     App.getDatabase().getChatbanReasonForUser(user.getId()),
                     user.isPermaChatbanned(),
                     user.getChatbanExpiryTime(),
-                    user.isRenameRequested(true)
+                    user.isRenameRequested(true),
+                    user.getDiscordName()
             ));
             sendAvailablePixels(channel, user, "auth");
         }
@@ -369,7 +372,8 @@ public class PacketHandler {
                         server.broadcast(new ServerChatMessage(new ChatMessage(nonce, user.getName(), nowMS / 1000L, toSend, user.getChatBadges())));
                     }
                 } catch (org.skife.jdbi.v2.exceptions.UnableToExecuteStatementException utese) {
-                    //ignore for now. caused by emojis TODO add emoji support
+                    utese.printStackTrace();
+                    System.err.println("Failed to execute the ChatMessage insert statement.");
                 }
             }
         }

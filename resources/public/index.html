@@ -46,6 +46,7 @@
         </div>
         <div class="panel-trigger" data-panel="chat">
             <i class="fas fa-comment-alt" id="message-icon"></i>
+            <i class="fas fa-circle ping-counter" id="ping-counter"></i>
         </div>
     </div>
 </header>
@@ -211,6 +212,7 @@
                     <label style="text-indent:1em"><input id="scrollDirectionToggle" type="checkbox"/>Invert scroll direction</label>
                     <label><input id="cbEnableMiddleMouseSelect" type="checkbox"> Enable middle mouse button selecting color from board</label>
                     <label><input id="cbNumberedPalette" type="checkbox"> Add numbers to palette entries</label>
+                    <label>Color Brightness: <input type="range" min="0" max="1" step="0.01" value="1" id="color-brightness"></label>
                     <label>Heatmap BG Opacity: <input type="range" min="0" max="1" step="0.01" id="heatmap-opacity"></label>
                     <label>Virginmap BG Opacity: <input type="range" min="0" max="1" step="0.01" id="virginmap-opacity"></label>
                     <label>
@@ -240,7 +242,7 @@
                 <h2>Pixel Ready Alert Settings</h2>
             </header>
             <div class="pad-wrapper">
-                <p class="alertLocationWrapper"><label for="txtAlertLocation">Alert URL:</label><input type="text" placeholder="notify.wav" id="txtAlertLocation"></p>
+                <p class="longTextInputWrapper"><label for="txtAlertLocation">Alert URL:</label><input type="text" placeholder="notify.wav" id="txtAlertLocation"></p>
                 <div class="ButtonBar">
                     <button id="btnForceAudioUpdate" class="button">Update</button>
                     <button id="btnAlertAudioTest" class="button">Test</button>
@@ -263,6 +265,19 @@
                     <label><input id="cbChatSettings24h" type="checkbox" />24 Hour Timestamps</label>
                     <label><input id="cbChatSettingsBadgesToggle" type="checkbox" />Show pixel-placed badges</label>
                     <label>Font Size: <input type="number" min="1" max="72" id="cbChatSettingsFontSize"> <button id="cbChatSettingsFontSizeConfirm" class="button"><i class="fas fa-check"></i></button></label>
+                    <label><input type="checkbox" id="cbChatSettingsPings" checked />Enable pings</label>
+                </div>
+            </div>
+        </article>
+        <article>
+            <header class="slim darker">
+                <h2>Account Settings</h2>
+            </header>
+            <div class="pad-wrapper">
+                <p class="longTextInputWrapper"><label for="txtDiscordName">Public Discord Name:</label><input type="text" placeholder="pxlslover#1337" id="txtDiscordName"></p>
+                <div class="ButtonBar">
+                    <button id="btnDiscordNameSet" class="button">Set</button>
+                    <button id="btnDiscordNameRemove" class="button">Remove</button>
                 </div>
             </div>
         </article>

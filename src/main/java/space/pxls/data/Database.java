@@ -43,6 +43,7 @@ public class Database implements Closeable {
         config.addDataSourceProperty("prepStmtCacheSqlLimit", "2048");
         config.addDataSourceProperty("allowMultiQueries", "true");
         config.setMaximumPoolSize(200); // this is plenty, the websocket uses 32
+        config.setConnectionInitSql("SET NAMES utf8mb4"); //needed for emoji's in chat
 
         dbi = new DBI(new HikariDataSource(config));
 
@@ -324,6 +325,13 @@ public class Database implements Closeable {
         getHandle().updateUsername(who_id, new_username);
     }
 
+    /**
+     * Sets the public Discord username of the user.
+     * @param who_id The ID of the user to update.
+     * @param discordName The new discord username.
+     */
+    public void setDiscordName(int who_id, String discordName) { getHandle().setDiscordName(who_id, discordName); }
+
     public String getUserBanReason(int id) {
         return getHandle().getUserBanReason(id).ban_reason;
     }
@@ -348,6 +356,22 @@ public class Database implements Closeable {
         return App.getConfig().getBoolean("selfPixelTimeIncrease") ? didPixelChange(x, y) : getHandle().shouldPixelTimeIncrease(x, y, who);
     }
 
+    public boolean hasUserFlaggedLastIPAlert(int who) {
+        return getHandle().hasUserFlaggedLastIPAlert(who);
+    }
+
+    public void setLastIPAlertFlag(boolean isFlagged, int user_id) {
+        getHandle().setLastIPAlertFlag(isFlagged, user_id);
+    }
+
+    public void flagLastIPAlert(int user_id) {
+        setLastIPAlertFlag(true, user_id);
+    }
+
+    public void unflagLastIPAlert(int user_id) {
+        setLastIPAlertFlag(false, user_id);
+    }
+
     public void adminLog(String message, int uid) {
         getHandle().adminLog(message, uid);
     }
@@ -366,6 +390,14 @@ public class Database implements Closeable {
 
     public boolean haveDupeIp(String ip, int uid) {
         return getHandle().haveDupeIp(ip, uid);
+    }
+
+    public int getDupedCount(String ip, int uid) {
+        return getHandle().getDupedCount(ip, uid);
+    }
+
+    public List<Integer> getDupedUsers(String ip, int uid) {
+        return getHandle().getDupedUsers(ip, uid);
     }
 
     public void addLookup(Integer who, String ip) {
