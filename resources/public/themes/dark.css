@@ -90,6 +90,10 @@ input[type="text"], textarea {
     color: #f44;
 }
 
+.text-yellow {
+    color: #cc0;
+}
+
 /* Panels */
 
 header {
@@ -139,6 +143,10 @@ hr {
 
 .chat-line.has-ping {
     background-color: #5b5345 !important;
+}
+
+li.chat-line .user {
+    text-shadow: 1px 1px 0 #333, -1px 1px 0 #333, 1px -1px 0 #333, -1px -1px 0 #333, 0 1px 0 #333, 0 -1px 0 #333, -1px 0 0 #333, 1px 0 0 #333;
 }
 
 /* Admin */
