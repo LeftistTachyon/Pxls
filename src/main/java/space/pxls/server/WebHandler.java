@@ -364,12 +364,12 @@ public class WebHandler {
 
         User user = exchange.getAttachment(AuthReader.USER);
         if (user == null) {
-            sendBadRequest(exchange);
+            send(StatusCodes.FORBIDDEN, exchange, "");
             return;
         }
 
         if (user.isBanned()) {
-            sendBadRequest(exchange);
+            send(StatusCodes.FORBIDDEN, exchange, "");
             return;
         }
 
@@ -379,33 +379,31 @@ public class WebHandler {
         try {
             chatNonce = data.getFirst("nonce");
         } catch (NullPointerException npe) {
-            sendBadRequest(exchange);
+            sendBadRequest(exchange, "Message nonce invalid/missing");
             return;
         }
 
         if (chatNonce == null) {
-            sendBadRequest(exchange);
+            sendBadRequest(exchange, "Message nonce missing");
             return;
         }
 
         DBChatMessage chatMessage = App.getDatabase().getChatMessageByNonce(chatNonce.getValue());
         if (chatMessage == null) {
-            sendBadRequest(exchange);
+            sendBadRequest(exchange, "Message didn't exist");
             return;
         }
 
         User author = App.getUserManager().getByID(chatMessage.author_uid);
         if (author == null) {
-            sendBadRequest(exchange);
+            sendBadRequest(exchange, "Author was null");
             return;
         }
 
         App.getDatabase().purgeChatMessageByNonce(chatMessage.nonce, user.getId());
         App.getServer().getPacketHandler().sendSpecificPurge(author, user, chatMessage.nonce, "");
 
-        exchange.setStatusCode(200);
-        exchange.getResponseSender().send("{}");
-        exchange.endExchange();
+        send(StatusCodes.OK, exchange, "");
     }
 
     public void chatPurge(HttpServerExchange exchange) {
@@ -671,7 +669,8 @@ public class WebHandler {
                             user.isPermaChatbanned(),
                             user.getChatbanExpiryTime(),
                             user.isRenameRequested(true),
-                            user.getDiscordName()
+                            user.getDiscordName(),
+                            user.getChatNameColor()
                     )));
         } else {
             exchange.setStatusCode(400);
@@ -958,8 +957,8 @@ public class WebHandler {
             return;
         }
 
-        int x = Integer.parseInt(xq.element());
-        int y = Integer.parseInt(yq.element());
+        int x = (int) Math.floor(Float.parseFloat(xq.element()));
+        int y = (int) Math.floor(Float.parseFloat(yq.element()));
         if (x < 0 || x >= App.getWidth() || y < 0 || y >= App.getHeight()) {
             exchange.setStatusCode(StatusCodes.BAD_REQUEST);
             exchange.endExchange();
@@ -1022,8 +1021,8 @@ public class WebHandler {
             exchange.endExchange();
             return;
         }
-        int x = Integer.parseInt(xq.getValue());
-        int y = Integer.parseInt(yq.getValue());
+        int x = (int) Math.floor(Float.parseFloat(xq.getValue()));
+        int y = (int) Math.floor(Float.parseFloat(yq.getValue()));
         int id = Integer.parseInt(idq.getValue());
         if (x < 0 || x >= App.getWidth() || y < 0 || y >= App.getHeight()) {
             exchange.setStatusCode(StatusCodes.BAD_REQUEST);

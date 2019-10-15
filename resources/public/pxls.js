@@ -847,10 +847,10 @@ window.App = (function () {
                         if ((event.button === 0 || touch) && downDelta < 500) {
                             if (!self.allowDrag && dx < 25 && dy < 25) {
                                 var pos = self.fromScreen(downX, downY);
-                                place.place(pos.x | 0, pos.y | 0);
+                                place.place(pos.x, pos.y);
                             } else if (dx < 5 && dy < 5) {
                                 var pos = self.fromScreen(clientX, clientY);
-                                place.place(pos.x | 0, pos.y | 0);
+                                place.place(pos.x, pos.y);
                             }
                         }
                         downDelta = 0;
@@ -1154,30 +1154,42 @@ window.App = (function () {
                         self.ctx.putImageData(self.id, 0, 0);
                     }
                 },
-                fromScreen: function (screenX, screenY) {
-                    var adjust_x = 0,
+                fromScreen: function (screenX, screenY, floored = true) {
+                    let toRet = {x: 0, y: 0};
+                    let adjust_x = 0,
                         adjust_y = 0;
                     if (self.scale < 0) {
                         adjust_x = self.width;
                         adjust_y = self.height;
                     }
+
                     if (self.use_js_render) {
-                        return {
+                        toRet = {
                             x: -self.pan.x + ((self.width - (window.innerWidth / self.scale)) / 2) + (screenX / self.scale) + adjust_x,
                             y: -self.pan.y + ((self.height - (window.innerHeight / self.scale)) / 2) + (screenY / self.scale) + adjust_y
                         };
+                    } else {
+                        //we scope these into the `else` so that we don't have to redefine `boardBox` twice. getBoundingClientRect() forces a redraw so we don't want to do it every call either if we can help it.
+                        let boardBox = self.elements.board[0].getBoundingClientRect();
+                        if (self.use_zoom) {
+                            toRet =  {
+                                x: (screenX / self.scale) - boardBox.left + adjust_x,
+                                y: (screenY / self.scale) - boardBox.top + adjust_y
+                            };
+                        } else {
+                            toRet = {
+                                x: ((screenX - boardBox.left) / self.scale) + adjust_x,
+                                y: ((screenY - boardBox.top) / self.scale) + adjust_y
+                            };
+                        }
                     }
-                    var boardBox = self.elements.board[0].getBoundingClientRect();
-                    if (self.use_zoom) {
-                        return {
-                            x: (screenX / self.scale) - boardBox.left + adjust_x,
-                            y: (screenY / self.scale) - boardBox.top + adjust_y
-                        };
+
+                    if (floored) {
+                        toRet.x >>= 0;
+                        toRet.y >>= 0;
                     }
-                    return {
-                        x: ((screenX - boardBox.left) / self.scale) + adjust_x,
-                        y: ((screenY - boardBox.top) / self.scale) + adjust_y
-                    };
+
+                    return toRet;
                 },
                 toScreen: function (boardX, boardY) {
                     if (self.scale < 0) {
@@ -1592,8 +1604,8 @@ window.App = (function () {
                         if ($(this).data("dragging")) {
                             var px_old = board.fromScreen(drag.x, drag.y),
                                 px_new = board.fromScreen(evt.clientX, evt.clientY),
-                                dx = (px_new.x | 0) - (px_old.x | 0),
-                                dy = (px_new.y | 0) - (px_old.y | 0),
+                                dx = (px_new.x) - (px_old.x),
+                                dy = (px_new.y) - (px_old.y),
                                 newX = self.options.x + dx,
                                 newY = self.options.y + dy;
                             self._update({ x: newX, y: newY });
@@ -1811,7 +1823,7 @@ window.App = (function () {
                     });
                 },
                 update: function () {
-                    var a = board.fromScreen(0, 0),
+                    var a = board.fromScreen(0, 0, false),
                         scale = board.getScale();
                     self.elements.grid.css({
                         backgroundSize: scale + "px " + scale + "px",
@@ -1849,7 +1861,7 @@ window.App = (function () {
                 },
                 autoreset: true,
                 setAutoReset: function (v) {
-                    self.autoreset = v ? true : false;
+                    self.autoreset = !!v;
                     ls.set("auto_reset", self.autoreset);
                 },
                 switch: function (newColor) {
@@ -1903,8 +1915,8 @@ window.App = (function () {
                     if (clientX !== undefined) {
                         var boardPos = board.fromScreen(clientX, clientY);
                         self.reticule = {
-                            x: boardPos.x |= 0,
-                            y: boardPos.y |= 0
+                            x: boardPos.x,
+                            y: boardPos.y
                         };
                     }
                     if (self.color === -1) {
@@ -1956,6 +1968,7 @@ window.App = (function () {
                                 self.switch(-1);
                             })
                     );
+                    uiHelper.updateUsernameColorDropdown(palette);
                 },
                 can_undo: false,
                 undo: function (evt) {
@@ -2007,16 +2020,20 @@ window.App = (function () {
                     socket.on("ACK", function (data) {
                         switch (data.ackFor) {
                             case "PLACE":
+                                $(window).trigger('pxls:ack:place', [data.x, data.y]);
                                 if (!ls.get("audio_muted")) {
                                     var clone = self.audio.cloneNode(false);
                                     clone.volume = parseFloat(ls.get("alert.volume"));
                                     clone.play();
                                 }
+                                break;
                             case "UNDO":
-                                if (uiHelper.getAvailable() === 0)
-                                    uiHelper.setPlaceableText(data.ackFor === "PLACE" ? 0 : 1);
+                                $(window).trigger('pxls:ack:undo', [data.x, data.y]);
                                 break;
                         }
+
+                        if (uiHelper.getAvailable() === 0)
+                            uiHelper.setPlaceableText(data.ackFor === "PLACE" ? 0 : 1);
                     });
                     socket.on("captcha_required", function (data) {
                         grecaptcha.reset();
@@ -2086,6 +2103,8 @@ window.App = (function () {
                 place: self.place,
                 switch: self.switch,
                 setPalette: self.setPalette,
+                getPalette: () => self.palette,
+                getPaletteColor: (n, def = "#000000") => self.palette[n] || def,
                 getPaletteRGB: self.getPaletteRGB,
                 setAutoReset: self.setAutoReset,
                 setNumberedPaletteEnabled: self.setNumberedPaletteEnabled,
@@ -2124,47 +2143,42 @@ window.App = (function () {
                         }).keydown(function (evt) {
                             evt.stopPropagation();
                         }),
-                        $("<div>").addClass("button").text("Cancel").css({
-                            position: "fixed",
-                            bottom: 20,
-                            left: 30,
-                            width: 66
-                        }).click(function () {
-                            self.elements.prompt.fadeOut(200);
-                        }),
-                        $("<button>").addClass("button").text("Report").css({
-                            position: "fixed",
-                            bottom: 20,
-                            right: 30
-                        }).click(function () {
-                            this.disabled = true;
-                            this.textContent = "Sending...";
+                        $("<div>").addClass("buttons").append(
+                            $("<div>").addClass("button").text("Cancel")
+                                .click(function () {
+                                    self.elements.prompt.fadeOut(200);
+                                }),
+                            $("<button>").addClass("button").text("Report")
+                                .click(function () {
+                                    this.disabled = true;
+                                    this.textContent = "Sending...";
 
-                            var selectedRule = self.elements.prompt.find("select").val();
-                            var textarea = self.elements.prompt.find("textarea").val().trim();
-                            var msg = selectedRule;
-                            if (selectedRule === "other") {
-                                if (textarea === "") {
-                                    alert.show("You must specify the details.");
-                                    return;
-                                }
-                                msg = textarea;
-                            } else if (textarea !== "") {
-                                msg += "; additional information: " + textarea;
-                            }
-                            $.post("/report", {
-                                id: id,
-                                x: x,
-                                y: y,
-                                message: msg
-                            }, function () {
-                                alert.show("Sent report!");
-                                self.elements.prompt.hide();
-                                self.elements.lookup.hide();
-                            }).fail(function () {
-                                alert.show("Error sending report.");
-                            })
-                        })
+                                    var selectedRule = self.elements.prompt.find("select").val();
+                                    var textarea = self.elements.prompt.find("textarea").val().trim();
+                                    var msg = selectedRule;
+                                    if (selectedRule === "other") {
+                                        if (textarea === "") {
+                                            alert.show("You must specify the details.");
+                                            return;
+                                        }
+                                        msg = textarea;
+                                    } else if (textarea !== "") {
+                                        msg += "; additional information: " + textarea;
+                                    }
+                                    $.post("/report", {
+                                        id: id,
+                                        x: x,
+                                        y: y,
+                                        message: msg
+                                    }, function () {
+                                        alert.show("Sent report!");
+                                        self.elements.prompt.hide();
+                                        self.elements.lookup.hide();
+                                    }).fail(function () {
+                                        alert.show("Error sending report.");
+                                    })
+                                })
+                        )
                     ).fadeIn(200);
                 },
                 /**
@@ -2185,6 +2199,7 @@ window.App = (function () {
                             id: hook.id || "hook",
                             name: hook.name || "Hook",
                             sensitive: hook.sensitive || false,
+                            backgroundCompatible: hook.backgroundCompatible || false,
                             get: hook.get || function () { },
                             css: hook.css || {},
                         };
@@ -2202,56 +2217,60 @@ window.App = (function () {
                 create: function (data) {
                     const sensitive = localStorage.getItem("hide_sensitive") === "true";
                     let sensitiveElems = [];
-                    self._makeShell(data).find(".content").first().append(function () {
-                        if (data) {
-                            return $.map(self.hooks, function (hook) {
-                                const get = hook.get(data);
-                                if (get == null) {
-                                	return null;
-                                }
-
-                                const value = typeof get === "object" ? get : $("<span>").text(get);
-
-                                let _retVal = $("<div data-sensitive=\"" + hook.sensitive + "\">").append(
-                                    $("<b>").text(hook.name + ": "),
-                                    value.css(hook.css)
-                                ).attr("id", "lookuphook_" + hook.id);
-                                if (hook.sensitive) {
-                                    sensitiveElems.push(_retVal);
-                                    if (sensitive) {
-                                        _retVal.css("display", "none");
-                                    }
-                                }
-                                return _retVal;
-                            });
-                        } else {
-                            return $("<p>").text("This pixel is background (was not placed by a user).");
-                        }
-                    }).append(function () {
-                        if (!data) {
+                    self._makeShell(data).find(".content").first().append(() => {
+                        if (!data.bg) {
                             return "";
                         }
-                        if (sensitiveElems.length >= 1) {
-                            let label = $("<label>").text("Hide sensitive information");
-                            let checkbox = $("<input type=\"checkbox\">").css("margin-top", "10px");
-                            label.prepend(checkbox);
-                            checkbox.prop("checked", sensitive);
-                            checkbox.change(function() {
-                                ls.set("hide_sensitive", this.checked);
-                                sensitiveElems.forEach(v => {
-                                    v.css("display", this.checked ? "none" : "");
-                                })
-                            });
-                            return label;
+
+                        return $("<p>").text("This pixel is background (was not placed by a user).")
+                    }).append(() => {
+                        let hooks = data.bg
+                            ? self.hooks.filter((hook) => hook.backgroundCompatible)
+                            : self.hooks;
+
+                        return $.map(hooks, (hook) => {
+                            const get = hook.get(data);
+                            if (get == null) {
+                                return null;
+                            }
+
+                            const value = typeof get === "object" ? get : $("<span>").text(get);
+
+                            let _retVal = $("<div data-sensitive=\"" + hook.sensitive + "\">").append(
+                                $("<b>").text(hook.name + ": "),
+                                value.css(hook.css)
+                            ).attr("id", "lookuphook_" + hook.id);
+                            if (hook.sensitive) {
+                                sensitiveElems.push(_retVal);
+                                if (sensitive) {
+                                    _retVal.css("display", "none");
+                                }
+                            }
+                            return _retVal;
+                        });
+                    }).append(() => {
+                        if (data.bg || sensitiveElems.length < 1) {
+                            return "";
                         }
-                        return "";
+
+                        let label = $("<label>").text("Hide sensitive information");
+                        let checkbox = $("<input type=\"checkbox\">").css("margin-top", "10px");
+                        label.prepend(checkbox);
+                        checkbox.prop("checked", sensitive);
+                        checkbox.change(function() {
+                            ls.set("hide_sensitive", this.checked);
+                            sensitiveElems.forEach(v => {
+                                v.css("display", this.checked ? "none" : "");
+                            })
+                        });
+                        return label;
                     });
                     self.elements.lookup.fadeIn(200);
                 },
                 _makeShell: function (data) {
                     return self.elements.lookup.empty().append(
                         $("<div>").addClass("content"),
-                        (data && user.isLoggedIn() ?
+                        (!data.bg && user.isLoggedIn() ?
                             $("<div>").addClass("button").css("float", "left").addClass("report-button").text("Report").click(function () {
                                 self.report(data.id, data.x, data.y);
                             })
@@ -2259,7 +2278,7 @@ window.App = (function () {
                         $("<div>").addClass("button").css("float", "right").text("Close").click(function () {
                             self.elements.lookup.fadeOut(200);
                         }),
-                        (data && template.getOptions().use ? $("<div>").addClass("button").css("float", "right").text("Move Template Here").click(function () {
+                        (template.getOptions().use ? $("<div>").addClass("button").css("float", "right").text("Move Template Here").click(function () {
                             template.queueUpdate({
                                 ox: data.x,
                                 oy: data.y,
@@ -2269,8 +2288,8 @@ window.App = (function () {
                 },
                 runLookup(clientX, clientY) {
                     const pos = board.fromScreen(clientX, clientY);
-                    $.get("/lookup", { x: Math.floor(pos.x), y: Math.floor(pos.y) }, function (data) {
-                        data = data || false;
+                    $.get("/lookup", pos, function (data) {
+                        data = data || { x: pos.x, y: pos.y, bg: true };
                         if (self.handle) {
                             self.handle(data);
                         } else {
@@ -2288,6 +2307,7 @@ window.App = (function () {
                             id: "coords",
                             name: "Coords",
                             get: data => $("<a>").text("(" + data.x + ", " + data.y + ")").attr("href", coords.getLinkToCoords(data.x, data.y)),
+                            backgroundCompatible: true,
                         }, {
                             id: "username",
                             name: "Username",
@@ -2426,25 +2446,27 @@ window.App = (function () {
             var self = {
                 init: function () {
                     drawer.create("#info", 73, "info_closed", true);
-                    $("#audiotoggle")[0].checked = ls.get("audio_muted");
-                    $("#audiotoggle").change(function () {
-                        ls.set("audio_muted", this.checked);
-                    });
+                    $("#audiotoggle")
+                        .prop("checked", ls.get("audio_muted"))
+                        .change(function() {
+                            ls.set("audio_muted", this.checked);
+                        });
+
                     //stickyColorToggle ("Keep color selected"). Checked = don't auto reset.
                     var auto_reset = ls.get("auto_reset");
                     if (auto_reset === null) {
-                        auto_reset = true;
+                        auto_reset = false;
                     }
                     place.setAutoReset(auto_reset);
-                    $("#stickyColorToggle")[0].checked = !auto_reset;
-
-                    $("#stickyColorToggle").change(function () {
-                        place.setAutoReset(!this.checked);
-                    });
+                    $("#stickyColorToggle")
+                        .prop("checked", !auto_reset)
+                        .change(function() {
+                            place.setAutoReset(!this.checked);
+                        });
 
                     $("#monospaceToggle").change(function () {
                         ls.set("monospace_lookup", this.checked);
-                        this.checked ? $(".monoVal").addClass("useMono") : $(".monoVal").removeClass("useMono");
+                        $(".monoVal").toggleClass("useMono", this.checked);
                     });
                 }
             };
@@ -2510,6 +2532,7 @@ window.App = (function () {
                     btnForceAudioUpdate: $("#btnForceAudioUpdate"),
                     themeSelect: $("#themeSelect"),
                     txtDiscordName: $("#txtDiscordName"),
+                    selUsernameColor: $("#selUsernameColor"),
                 },
                 themes: [
                     {
@@ -2522,7 +2545,7 @@ window.App = (function () {
                     self._initStack();
                     self._initAudio();
                     self._initAccount();
-                    var useMono = ls.get("monospace_lookup")
+                    var useMono = ls.get("monospace_lookup");
                     if (typeof useMono === 'undefined') {
                         ls.set("monospace_lookup", true);
                         useMono = true;
@@ -2585,15 +2608,43 @@ window.App = (function () {
                             place.setNumberedPaletteEnabled(this.checked === true);
                         });
 
-                    const numOrDefault = (n, def) => isNaN(n) ? def : n
-                    const colorBrightnessLevel = numOrDefault(parseFloat(ls.get("colorBrightness")), 1)
-                    $("#color-brightness").val(colorBrightnessLevel)
-                    self.adjustColorBrightness(colorBrightnessLevel)
-                    $("#color-brightness").change((e) => {
-                        const level = parseFloat(e.target.value);
-                        ls.set("colorBrightness", level);
-                        self.adjustColorBrightness(level)
-                    });
+
+                    const numOrDefault = (n, def) => isNaN(n) ? def : n;
+                    const colorBrightnessLevel = numOrDefault(parseFloat(ls.get("colorBrightness")), 1);
+                    const colorBrightnessSlider = $("#color-brightness");
+                    const colorBrightnessToggle = $("#color-brightness-toggle");
+
+                    colorBrightnessToggle
+                        .prop('checked', ls.get('brightness.enabled') === true)
+                        .change(function(e) {
+                            let isEnabled = !!this.checked;
+                            ls.set('brightness.enabled', isEnabled);
+                            colorBrightnessSlider.prop('disabled', !isEnabled);
+                            self.adjustColorBrightness(isEnabled ? numOrDefault(parseFloat(ls.get("colorBrightness")), 1) : null);
+                        });
+
+                    colorBrightnessSlider
+                        .val(colorBrightnessLevel)
+                        .prop('disabled', ls.get('brightness.enabled') !== true)
+                        .change((e) => {
+                            if (ls.get('brightness.enabled') === true) {
+                                const level = parseFloat(e.target.value);
+                                ls.set("colorBrightness", level);
+                                self.adjustColorBrightness(level);
+                            }
+                        });
+                    self.adjustColorBrightness(ls.get('brightness.enabled') === true ? colorBrightnessLevel : null); //ensure we clear if it's disabled on init
+
+                    $("#selInternalLinkAction")
+                        .val(String(ls.get('chat.internalClickDefault') >> 0))
+                        .change(function() {
+                            ls.set('chat.internalClickDefault', this.value >> 0);
+                        });
+
+                    self.elements.selUsernameColor
+                        .change(function() {
+                            socket.send({"type": "UserUpdate", updates: {NameColor: String(this.value >> 0)}});
+                        });
 
                     $(window).keydown(function (evt) {
                         switch (evt.key || evt.which) {
@@ -2613,26 +2664,26 @@ window.App = (function () {
                         }
                     });
 
-                    let _info = $("#info");
-                    if (_info.hasClass("open")) {
-                        _info.find("iframe[data-lazysrc]").each((index, elem) => {
+                    let _info = document.querySelector('.panel[data-panel="info"]');
+                    if (_info.classList.contains("open")) {
+                        _info.querySelectorAll("iframe[data-lazysrc]").forEach(elem => {
                             elem.src = elem.dataset.lazysrc;
                             delete elem.dataset.lazysrc;
                         });
                     } else {
-                        _info.on("drawer-state-change", function (event, data) {
-                            if (data.isOpen === true) {
-                                let elems = $("#info iframe[data-lazysrc]");
-                                if (elems.length) {
-                                    elems.each((index, elem) => {
+                        function toAttach(e, which) {
+                            if (which === "info") {
+                                let elems = document.querySelectorAll('iframe[data-lazysrc]');
+                                if (elems && elems.length) {
+                                    elems.forEach(elem => {
                                         elem.src = elem.dataset.lazysrc;
                                         delete elem.dataset.lazysrc;
                                     });
-                                } else {
-                                    _info.off("drawer-state-change");
                                 }
+                                $(window).off('pxls:panel:opened', toAttach);
                             }
-                        })
+                        }
+                        $(window).on("pxls:panel:opened", toAttach);
                     }
                 },
                 _initThemes: function () {
@@ -2726,16 +2777,16 @@ window.App = (function () {
                 _initAccount: function() {
                     self.elements.txtDiscordName.keydown(function (evt) {
                         if (evt.key == "Enter" || evt.which === 13) {
-                                self.handleDiscordNameSet();
+                            self.handleDiscordNameSet();
                         }
                         evt.stopPropagation();
                     });
                     $("#btnDiscordNameSet").click(() => {
-                        self.handleDiscordNameSet()
+                        self.handleDiscordNameSet();
                     });
                     $("#btnDiscordNameRemove").click(() => {
-                        self.setDiscordName("")
-                        self.handleDiscordNameSet()
+                        self.setDiscordName("");
+                        self.handleDiscordNameSet();
                     });
                 },
                 handleDiscordNameSet() {
@@ -2791,10 +2842,20 @@ window.App = (function () {
                         "#cursor",
                         "#reticule",
                         "#palette .palette-color"
-                    ].join(", ")).css("filter", `brightness(${level})`);
+                    ].join(", ")).css("filter", level != null ? `brightness(${level})` : '');
                 },
                 getAvailable() {
                     return self._available;
+                },
+                updateUsernameColorDropdown: palette => {
+                    self.elements.selUsernameColor.empty().append(
+                        palette.map((x,i) => crel('option', {value: i, 'data-idx': i, style: `background-color: ${x}`}, x))
+                    )[0].selectedIndex = user.getChatNameColor();
+                },
+                updateSelectedNameColor: idx => {
+
+                    self.elements.selUsernameColor[0].selectedIndex = idx >> 0;
+                    self.elements.selUsernameColor[0].style.backgroundColor = place.getPaletteColor(idx >> 0);
                 }
             };
 
@@ -2806,7 +2867,9 @@ window.App = (function () {
                 setPlaceableText: self.setPlaceableText,
                 setMax: self.setMax,
                 setDiscordName: self.setDiscordName,
-                updateAudio: self.updateAudio
+                updateAudio: self.updateAudio,
+                updateUsernameColorDropdown: self.updateUsernameColorDropdown,
+                updateSelectedNameColor: self.updateSelectedNameColor,
             };
         })(),
         panels = (function() {
@@ -2890,6 +2953,7 @@ window.App = (function () {
                 chatban: {
                     banStart: 0,
                     banEnd: 0,
+                    permanent: false,
                     banEndFormatted: '',
                     timeLeft: 0,
                     timer: 0
@@ -2913,7 +2977,52 @@ window.App = (function () {
                     fnAttributes: urlObj => {},
                     fnExclude: urlObj => {}
                 },
+                TEMPLATE_ACTIONS: {
+                    NEW_TAB: {
+                        id: 1,
+                        pretty: "Open in a new tab"
+                    },
+                    CURRENT_TAB: {
+                        id: 2,
+                        pretty: "Open in current tab (replacing template)"
+                    },
+                    JUMP_ONLY: {
+                        id: 3,
+                        pretty: "Jump to coordinates without replacing template"
+                    }
+                },
                 init: () => {
+                    socket.on('ack_client_update', e => {
+                        if (e.updateType && e.updateValue) {
+                            switch(e.updateType) {
+                                case 'NameColor': {
+                                    user.setChatNameColor(e.updateValue >> 0);
+                                    uiHelper.updateSelectedNameColor(e.updateValue >> 0);
+                                    break;
+                                }
+                                default: {
+                                    console.warn('got unknown updateType on ack_client_update: %o', e);
+                                    break;
+                                }
+                            }
+                        }
+                    });
+                    socket.on('chat_user_update', e => {
+                        if (e.who && e.updates && typeof (e.updates) === "object") {
+                            for (let update of Object.entries(e.updates)) {
+                                switch(update[0]) {
+                                    case 'NameColor': {
+                                        self._updateAuthorNameColor(e.who, place.getPaletteColor(update[1] >> 0));
+                                        break;
+                                    }
+                                    default: {
+                                        console.warn('Got an unknown chat_user_update from %o: %o (%o)', e.who, update, e);
+                                        break;
+                                    }
+                                }
+                            }
+                        } else console.warn('Malformed chat_user_update: %o', e);
+                    });
                     socket.on('chat_history', e => {
                         if (self.seenHistory) return;
                         for (let packet of e.messages.reverse()) {
@@ -2928,6 +3037,7 @@ window.App = (function () {
                         }
                         self.seenHistory = true;
                         self.addServerAction('History loaded at ' + moment().format('MMM Do YYYY, hh:mm:ss A'));
+                        setTimeout(() => socket.send({"type": "ChatbanState"}), 0);
                     });
                     socket.on('chat_message', e => {
                         self._process(e.message);
@@ -2970,18 +3080,22 @@ window.App = (function () {
                         clearInterval(self.timeout.timer);
                         self.chatban.banStart = moment.now();
                         self.chatban.banEnd = moment(e.expiry);
+                        self.chatban.permanent = e.permanent;
                         self.chatban.banEndFormatted = self.chatban.banEnd.format('MMM Do YYYY, hh:mm:ss A');
                         setTimeout(() => {
                             clearInterval(self.chatban.timer);
                             if (e.expiry - self.chatban.banStart > 0 && !e.permanent) {
                                 self.elements.rate_limit_overlay.show();
                                 self.elements.rate_limit_counter.text('You have been banned from chat.');
-                                self.addServerAction(`You are banned ${e.permanent ? 'permanently from chat.' : ' until ' + self.chatban.banEndFormatted}`);
+                                self.addServerAction(`You are banned ${e.permanent ? 'permanently from chat.' : 'until ' + self.chatban.banEndFormatted}`);
+                                if (e.reason) {
+                                    self.addServerAction(`Ban reason: ${e.reason}`);
+                                }
                                 self.chatban.timer = setInterval(() => {
                                     let timeLeft = self.chatban.banEnd - moment();
                                     if (timeLeft > 0) {
                                         self.elements.rate_limit_overlay.show();
-                                        self.elements.rate_limit_counter.text(`Chatban expires in ${timeLeft / 1e3 >> 0}s, at ${self.chatban.banEndFormatted}`);
+                                        self.elements.rate_limit_counter.text(`Chatban expires in ${Math.ceil(timeLeft / 1e3)}s, at ${self.chatban.banEndFormatted}`);
                                     } else {
                                         self.elements.rate_limit_overlay.hide();
                                         self.elements.rate_limit_counter.text('');
@@ -2990,7 +3104,10 @@ window.App = (function () {
                             } else if (e.permanent) {
                                 self.elements.rate_limit_overlay.show();
                                 self.elements.rate_limit_counter.text('You have been banned from chat.');
-                                self.addServerAction(`You are banned from chat${e.permanent ? ' permanently.' : ' until ' + self.chatban.banEndFormatted}`);
+                                self.addServerAction(`You are banned from chat${e.permanent ? ' permanently.' : 'until ' + self.chatban.banEndFormatted}`);
+                                if (e.reason) {
+                                    self.addServerAction(`Ban reason: ${e.reason}`);
+                                }
                             } else if (e.type !== "chat_ban_state") { //chat_ban_state is a query result, not an action notice.
                                 self.elements.rate_limit_overlay.hide();
                                 self.elements.rate_limit_counter.text('');
@@ -3026,7 +3143,7 @@ window.App = (function () {
                         if (e.amount >= 2147483647) {
                             self.addServerAction(`${e.initiator} purged all messages from ${e.target}.`);
                         } else {
-                            self.addServerAction(`${e.amount} message${e.amount !== 1 ? 's' : ''} from ${e.target} were purged by ${e.initiator}.`);
+                            self.addServerAction(`${e.amount} message${e.amount !== 1 ? 's' : ''} from ${e.target} ${e.amount !== 1 ? 'were' : 'was'} purged by ${e.initiator}.`);
                         }
                     });
                     socket.on('chat_purge_specific', e => {
@@ -3045,7 +3162,6 @@ window.App = (function () {
                         }
                     });
 
-                    socket.send({"type": "ChatbanState"});
                     socket.send({"type": "ChatHistory"});
 
                     self.elements.rate_limit_overlay.hide();
@@ -3055,13 +3171,14 @@ window.App = (function () {
                         e.stopPropagation();
                         let toSend = self.elements.input[0].value;
                         let trimmed = toSend.trim();
+                        let handling = false;
                         if ((e.originalEvent.key == "Enter" || e.originalEvent.which === 13) && !e.shiftKey) {
-                            e.preventDefault();
                             if (trimmed.startsWith('/') && user.getRole() !== "USER") {
                                 let args = trimmed.substr(1).split(' '),
                                     command = args.shift();
                                 switch (command.toLowerCase().trim()) {
                                     case 'permaban': {
+                                        handling = true;
                                         let usage = `/permaban USER SHOULD_PURGE BAN_REASON\n/permaban help`;
                                         let help = [
                                             usage,
@@ -3106,6 +3223,7 @@ window.App = (function () {
                                         break;
                                     }
                                     case 'tempban': {
+                                        handling = true;
                                         let usage = `/tempban USER BAN_LENGTH SHOULD_PURGE BAN_REASON\n/tempban help`;
                                         let help = [
                                             usage,
@@ -3155,6 +3273,7 @@ window.App = (function () {
                                         break;
                                     }
                                     case 'purge': {
+                                        handling = true;
                                         let usage = `/purge USER PURGE_AMOUNT PURGE_REASON\n/purge help`;
                                         let help = [
                                             usage,
@@ -3195,7 +3314,9 @@ window.App = (function () {
                                         break;
                                     }
                                 }
-                            } else {
+                            }
+                            e.preventDefault();
+                            if (!handling) {
                                 self._send(self.elements.input[0].value);
                                 self.elements.input.val("");
                             }
@@ -3230,13 +3351,21 @@ window.App = (function () {
                                 ls.set("chat-last_seen_nonce", lastN.dataset.nonce);
                             }
 
-                            if (user.isLoggedIn()) {
+                            if (self.isChatBanned()) {
+                                self.elements.rate_limit_overlay.show();
+                            } else if (user.isLoggedIn()) {
                                 self.elements.rate_limit_overlay.hide();
                                 self.elements.rate_limit_counter.text('');
                             } else {
                                 self.elements.rate_limit_overlay.show();
                                 self.elements.rate_limit_counter.text('You must be logged in to chat.');
                             }
+                        }
+                    });
+
+                    $(window).on('pxls:user:loginState', (e, state) => {
+                        if (!self.isChatBanned()) {
+                            self.elements.rate_limit_overlay.hide();
                         }
                     });
 
@@ -3315,6 +3444,9 @@ window.App = (function () {
                         self.stickToBottom = self._numWithinDrift(obj.scrollTop >> 0, obj.scrollHeight - obj.offsetHeight, 2);
                     });
                 },
+                isChatBanned: () => {
+                    return self.chatban.permanent || (self.chatban.banEnd - moment.now() > 0);
+                },
                 clearPings: () => {
                     self.elements.message_icon.removeClass('has-notification');
                     self.elements.panel_trigger.removeClass('has-ping');
@@ -3330,7 +3462,7 @@ window.App = (function () {
                     let when = moment();
                     let toAppend =
                         crel('li', {'class': 'chat-line server-action'},
-                            crel('span', {'title': when.format('MMM Do YYYY, hh:mm:ss A')}, when.format('hh:mm:ss A')),
+                            crel('span', {'title': when.format('MMM Do YYYY, hh:mm:ss A')}, when.format(ls.get('chat.24h') === true ? 'HH:mm' : 'hh:mm A')),
                             document.createTextNode(' - '),
                             crel('span', {'class': 'content'}, msg)
                         );
@@ -3359,6 +3491,9 @@ window.App = (function () {
                         board.setScale(zoom);
                     }
                 },
+                _updateAuthorNameColor: (author, colorString) => {
+                    self.elements.body.find(`.chat-line[data-author="${author}"] .user`).css('color', colorString);
+                },
                 _process: packet => {
                     if (packet.nonce) {
                         if (self.nonceLog.includes(packet.nonce)) {
@@ -3370,7 +3505,7 @@ window.App = (function () {
                             }
                         }
                     }
-                    let hasPing = ls.get('chat.pings-enabled') === true && user.getUsername().toLowerCase() !== packet.author.toLowerCase() && packet.message_raw.toLowerCase().includes(`@${user.getUsername().toLowerCase()}`);
+                    let hasPing = ls.get('chat.pings-enabled') === true && user.isLoggedIn() && packet.message_raw.toLowerCase().split(' ').includes(`@${user.getUsername().toLowerCase()}`);
                     let when = moment.unix(packet.date);
                     let badges = crel('span', {'class': 'badges'});
                     if (Array.isArray(packet.badges)) {
@@ -3390,7 +3525,7 @@ window.App = (function () {
                     let contentSpan = self._processMessage(packet.message_raw);
 
                     self.elements.body.append(
-                        crel('li', {'data-nonce': packet.nonce, 'data-author': packet.author, 'data-date': packet.date, 'data-badges': JSON.stringify(packet.badges || []), 'class': `chat-line${hasPing ? ' has-ping' : ''}`},
+                        crel('li', {'data-nonce': packet.nonce, 'data-author': packet.author, 'data-date': packet.date, 'data-badges': JSON.stringify(packet.badges || []), 'class': `chat-line${hasPing ? ' has-ping' : ''} ${packet.author.toLowerCase().trim() === user.getUsername().toLowerCase().trim() ? 'is-from-us' : ''}`},
                             crel('span', {'class': 'actions'},
                                 crel('i', {'class': 'fas fa-cog', 'data-action': 'actions-panel', 'title': 'Actions', onclick: self._popUserPanel})
                             ),
@@ -3398,7 +3533,7 @@ window.App = (function () {
                             document.createTextNode(' '),
                             badges,
                             document.createTextNode(' '),
-                            crel('span', {'class': 'user', onclick: self._popUserPanel}, packet.author),
+                            crel('span', {'class': 'user', style: `color: ${place.getPaletteColor(packet.authorNameColor)}`, onclick: self._popUserPanel}, packet.author),
                             document.createTextNode(': '),
                             contentSpan,
                             document.createTextNode(' ')
@@ -3424,7 +3559,7 @@ window.App = (function () {
                             if (isNaN(group1) || isNaN(group2)) return match;
                             if (!board.validateCoordinates(parseFloat(group1), parseFloat(group2))) return match;
                             let group3Str = !(parseFloat(group3)) ? '' : `, ${group3}x`;
-                            return `<span class="link -internal-jump" data-x="${group1}" data-y="${group2}" data-zoom="${group3}">(${group1}, ${group2}${group3Str})</span>`;
+                            return `<span class="link -internal-jump" data-x="${group1}" data-y="${group2}" data-scale="${group3}">(${group1}, ${group2}${group3Str})</span>`;
                         });
 
                         //insert <a>'s
@@ -3435,6 +3570,7 @@ window.App = (function () {
                             let anchorText = x.raw.substr(0, 78);
                             if (x.raw.length > 78) anchorText += '...';
                             let anchorTarget = null;
+                            let jumpTarget = false;
 
                             try {
                                 url = new URL(x.raw.indexOf(x.protocol) !== 0 ? `${x.protocol}${x.raw}` : x.raw);
@@ -3470,10 +3606,10 @@ window.App = (function () {
                                 if ((document.location.origin && url.origin) && document.location.origin === url.origin) { //URL is for this origin, run some checks for game features
                                     if (params.x != null && params.y != null) { //url has x/y so it's probably in the game window
                                         if (board.validateCoordinates(params.x, params.y)) {
-                                            anchorText = `(${params.x}, ${params.y}, ${params.scale}x)`;
+                                            jumpTarget = Object.assign({displayText: `(${params.x}, ${params.y}, ${params.scale}x)`, raw: url.toString()}, params);
                                             if (params.template != null && params.template.length >= 11) { //we have a template, should probably make that known
                                                 let truncatedTemplate = decodeURIComponent(params.template);
-                                                anchorText += ` (template: ${(truncatedTemplate > 50) ? `${truncatedTemplate.substr(0, 50)}...` : truncatedTemplate})`;
+                                                jumpTarget.displayText += ` (template: ${(truncatedTemplate > 50) ? `${truncatedTemplate.substr(0, 50)}...` : truncatedTemplate})`;
                                             }
                                         }
                                     } else {
@@ -3484,10 +3620,20 @@ window.App = (function () {
                                 }
                             }
 
-                            let anchor = crel('a', {'href': x.raw.indexOf(x.protocol) !== 0 ? `${x.protocol}${x.raw}` : x.raw, 'title': x.raw}, anchorText);
-                            if (anchorTarget) anchor.target = anchorTarget;
+                            let elem = crel('a', {'href': x.raw.indexOf(x.protocol) !== 0 ? `${x.protocol}${x.raw}` : x.raw, 'title': x.raw}, anchorText);
+                            if (jumpTarget !== false) {
+                                elem.innerHTML = jumpTarget.displayText || elem.innerHTML;
+                                elem.className = `link -internal-jump`;
+                                for (let key in jumpTarget) {
+                                    if (jumpTarget.hasOwnProperty(key)) {
+                                        elem.dataset[key] = jumpTarget[key];
+                                    }
+                                }
+                            } else {
+                                if (anchorTarget) elem.target = anchorTarget;
+                            }
 
-                            str = str.replace(x.raw, anchor.outerHTML);
+                            str = str.replace(x.raw, elem.outerHTML);
                         }
 
                         //any other text manipulation after anchor insertion
@@ -3498,13 +3644,85 @@ window.App = (function () {
 
                         //hook up any necessary event listeners
                         toReturn.querySelectorAll('.-internal-jump[data-x]').forEach(x => {
-                            x.onclick = () => self.jump(parseFloat(x.dataset.x), parseFloat(x.dataset.y), parseFloat(x.dataset.zoom));
+                            x.onclick = e => {
+                                e.preventDefault();
+                                if (x.dataset.template) {
+                                    let internalClickDefault = ls.get('chat.internalClickDefault') >> 0;
+                                    if (internalClickDefault === 0) {
+                                        self._popTemplateOverwriteConfirm(x).then(action => {
+                                            alert.hide();
+                                            self._handleTemplateOverwriteAction(action, x);
+                                        });
+                                    } else {
+                                        self._handleTemplateOverwriteAction(internalClickDefault, x);
+                                    }
+                                } else {
+                                    self.jump(parseFloat(x.dataset.x), parseFloat(x.dataset.y), parseFloat(x.dataset.scale));
+                                }
+                            };
                         });
                     } catch (e) {
                         console.error('Failed to process a line, defaulting to raw', e);
                     }
 
                     return toReturn;
+                },
+                _handleTemplateOverwriteAction: (action, linkElem) => {
+                    switch(action) {
+                        case false: break;
+                        case self.TEMPLATE_ACTIONS.CURRENT_TAB.id: {
+                            self._pushStateMaybe(); //ensure people can back button if available
+                            document.location.href = linkElem.dataset.raw; //overwrite href since that will trigger hash-based update of template. no need to re-write that logic
+                            break;
+                        }
+                        case self.TEMPLATE_ACTIONS.JUMP_ONLY.id: {
+                            self._pushStateMaybe(); //ensure people can back button if available
+                            self.jump(parseFloat(linkElem.dataset.x), parseFloat(linkElem.dataset.y), parseFloat(linkElem.dataset.scale));
+                            break;
+                        }
+                        case self.TEMPLATE_ACTIONS.NEW_TAB.id: {
+                            if (!window.open(linkElem.dataset.raw, '_blank')) { //what popup blocker still blocks _blank redirects? idk but i'm sure they exist.
+                                alert.showElem(
+                                    crel('div',
+                                        crel('h3', 'Failed to automatically open in a new tab'),
+                                        crel('a', {href: linkElem.dataset.raw, target: '_blank'}, 'Click here to open in a new tab instead')
+                                    )
+                                );
+                            }
+                            break;
+                        }
+                    }
+                },
+                _popTemplateOverwriteConfirm: (internalJumpElem) => {
+                    return new Promise((resolve, reject) => {
+                        let bodyWrapper = crel('div');
+                        let buttons = crel('div', {'style': 'text-align: right; display: block; width: 100%;'});
+
+                        alert.showElem(crel(bodyWrapper,
+                            crel('h3', {'class': 'text-orange'}, 'This link will overwrite your current template. What would you like to do?'),
+                            Object.values(self.TEMPLATE_ACTIONS).map(action =>
+                                crel('label', {'style': 'display: block; margin: 3px 3px 3px 1rem; margin-left: 1rem;'},
+                                    crel('input', {'type': 'radio', 'name': 'link-action-rb', 'data-action-id': action.id}),
+                                    action.pretty
+                                )
+                            ),
+                            crel('span', {'class': 'text-muted'}, 'Note: You can set a default action in the settings menu which bypasses this popup completely'),
+                            crel('div', {'style': 'text-align: right; display: block; width: 100%'},
+                                [
+                                    ["Cancel", () => resolve(false)],
+                                    ["OK", () => resolve(bodyWrapper.querySelector('input[type=radio]:checked').dataset.actionId >> 0)]
+                                ].map(x =>
+                                    crel('button', {'class': 'button', 'style': 'margin-left: 3px; position: initial !important; bottom: initial !important; right: initial !important;', onclick: x[1]}, x[0])
+                                )
+                            )
+                        ), true);
+                        bodyWrapper.querySelector(`input[type="radio"][data-action-id="${self.TEMPLATE_ACTIONS.NEW_TAB.id}"]`).checked = true;
+                    });
+                },
+                _pushStateMaybe(url) {
+                    if ((typeof history.pushState) === "function") {
+                        history.pushState(null, document.title, url == null ? document.location.href : url); //ensure people can back button if available
+                    }
                 },
                 _popUserPanel: function(e) { //must be es5 for expected behavior. don't upgrade syntax, this is attached as an onclick and we need `this` to be bound by dom bubbles.
                     if (this && this.closest) {
@@ -4166,7 +4384,7 @@ window.App = (function () {
                         var boardPos = board.fromScreen(evt.clientX, evt.clientY);
 
                         self.mouseCoords = boardPos;
-                        self.elements.coords.text("(" + (boardPos.x | 0) + ", " + (boardPos.y | 0) + ")");
+                        self.elements.coords.text("(" + (boardPos.x) + ", " + (boardPos.y) + ")");
                         if (!self.elements.coordsWrapper.is(":visible")) self.elements.coordsWrapper.fadeIn(200);
                     }
 
@@ -4174,7 +4392,7 @@ window.App = (function () {
                         var boardPos = board.fromScreen(evt.changedTouches[0].clientX, evt.changedTouches[0].clientY);
 
                         self.mouseCoords = boardPos;
-                        self.elements.coords.text("(" + (boardPos.x | 0) + ", " + (boardPos.y | 0) + ")");
+                        self.elements.coords.text("(" + (boardPos.x) + ", " + (boardPos.y) + ")");
                         if (!self.elements.coordsWrapper.is(":visible")) self.elements.coordsWrapper.fadeIn(200);
                     }
 
@@ -4224,6 +4442,7 @@ window.App = (function () {
                 pendingSignupToken: null,
                 loggedIn: false,
                 username: '',
+                chatNameColor: 0,
                 getRole: function () {
                     return self.role;
                 },
@@ -4263,14 +4482,11 @@ window.App = (function () {
                                     );
                                 })
                             ),
-                            $("<div>").addClass("button").text("Close").css({
-                                position: "fixed",
-                                bottom: 20,
-                                right: 30,
-                                width: 55
-                            }).click(function () {
-                                self.elements.prompt.fadeOut(200);
-                            })
+                            $("<div>").addClass("buttons").append(
+                                $("<div>").addClass("button").text("Cancel").click(function () {
+                                    self.elements.prompt.fadeOut(200);
+                                })
+                            )
                         ).fadeIn(200);
                     });
                 },
@@ -4326,6 +4542,7 @@ window.App = (function () {
                                 window.deInitAdmin();
                             }
                             self.loggedIn = false;
+                            $(window).trigger('pxls:user:loginState', [false]);
                             socket.reconnectSocket();
                         });
                     });
@@ -4347,8 +4564,11 @@ window.App = (function () {
                             banelem = $("<div>").addClass("ban-alert-content");
                         self.username = data.username;
                         self.loggedIn = true;
+                        self.chatNameColor = data.chatNameColor;
+                        uiHelper.updateSelectedNameColor(data.chatNameColor);
+                        $(window).trigger('pxls:user:loginState', [true]);
                         self.renameRequested = data.renameRequested;
-                        uiHelper.setDiscordName(data.discordName || "")
+                        uiHelper.setDiscordName(data.discordName || "");
                         self.elements.loginOverlay.fadeOut(200);
                         self.elements.userInfo.find("span.name").text(data.username);
                         if (data.method == 'ip') {
@@ -4488,6 +4708,8 @@ window.App = (function () {
                 renameRequested: self.renameRequested,
                 showRenameRequest: self.showRenameRequest,
                 hideRenameRequest: self.hideRenameRequest,
+                getChatNameColor: () => self.chatNameColor,
+                setChatNameColor: c => self.chatNameColor = c,
                 get admin() {
                     return self.admin || false;
                 }

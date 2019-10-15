@@ -101,11 +101,18 @@
     <h1>Sign up</h1>
     <h4>Pick a username</h4>
 
-    <input class="" type="text" maxlength="32">
+    <label>Username: <input type="text" maxlength="32"></label>
     <div class="error" id="error"></div>
-    <span class="button" id="signup-button">Sign up</span>
+    <div class="buttons">
+        <span class="button" id="signup-button">Sign up</span>
+    </div>
 </div>
-<div id="alert" class="message" ><span class="text"></span><div class="custWrapper"></div> <span class="button default-control">OK</span></div>
+<div id="alert" class="message" >
+    <span class="text"></span><div class="custWrapper"></div>
+    <div class="buttons">
+        <span class="button default-control">OK</span>
+    </div>
+</div>
 
 
 <div class="g-recaptcha"
@@ -212,7 +219,6 @@
                     <label style="text-indent:1em"><input id="scrollDirectionToggle" type="checkbox"/>Invert scroll direction</label>
                     <label><input id="cbEnableMiddleMouseSelect" type="checkbox"> Enable middle mouse button selecting color from board</label>
                     <label><input id="cbNumberedPalette" type="checkbox"> Add numbers to palette entries</label>
-                    <label>Color Brightness: <input type="range" min="0" max="1" step="0.01" value="1" id="color-brightness"></label>
                     <label>Heatmap BG Opacity: <input type="range" min="0" max="1" step="0.01" id="heatmap-opacity"></label>
                     <label>Virginmap BG Opacity: <input type="range" min="0" max="1" step="0.01" id="virginmap-opacity"></label>
                     <label>
@@ -223,6 +229,10 @@
                             <option value="image/webp">WEBP (Chrome only)</option>
                         </select>
                     </label>
+
+                    <label class="vertical-spacing"><input type="checkbox" id="color-brightness-toggle"> Enable Color Brightness</label>
+                    <label class="text-orange fake-indent"><i class="fas fa-exclamation-triangle"></i> Warning: Known to cause fuzziness in Chrome on some Mac/Linux installs</label>
+                    <label class="fake-indent">Color Brightness: <input type="range" min="0" max="1" step="0.01" value="1" id="color-brightness"></label>
                 </div>
             </div>
         </article>
@@ -266,6 +276,19 @@
                     <label><input id="cbChatSettingsBadgesToggle" type="checkbox" />Show pixel-placed badges</label>
                     <label>Font Size: <input type="number" min="1" max="72" id="cbChatSettingsFontSize"> <button id="cbChatSettingsFontSizeConfirm" class="button"><i class="fas fa-check"></i></button></label>
                     <label><input type="checkbox" id="cbChatSettingsPings" checked />Enable pings</label>
+                    <label>Default internal link click action:
+                        <select name="selInternalLinkAction" id="selInternalLinkAction">
+                            <option value="0">Ask</option>
+                            <option value="1">Open in new tab</option>
+                            <option value="2">Open in current tab</option>
+                            <option value="3">Only jump, don't replace template</option>
+                        </select>
+                    </label>
+                    <label>Username color
+                        <select name="selUsernameColor" id="selUsernameColor" style="font-family: monospace; font-size: 1.25rem; color: #FFFFFF; padding: 5px; border-radius: 5px;">
+                            <option value="-1" selected>Loading...</option>
+                        </select>
+                    </label>
                 </div>
             </div>
         </article>

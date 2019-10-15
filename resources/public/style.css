@@ -90,6 +90,19 @@ kbd {
     text-indent: 0.75em;
 }
 
+.vertical-spacing {
+    margin-top: .5em;
+    margin-bottom: .5em;
+}
+
+.fake-indent {
+    margin-left:1.2rem;
+}
+
+input:disabled {
+    cursor: not-allowed;
+}
+
 .longTextInputWrapper {
     max-width: 100% !important;
 }
@@ -134,7 +147,7 @@ kbd {
 }
 
 .message {
-    padding: 30px 30px 60px;
+    padding: 30px 30px 10px;
     border-radius: 7px;
     background-color: #fff;
     color: #333;
@@ -151,10 +164,9 @@ kbd {
     overflow-wrap: break-word;
 }
 
-.message .button {
-    position: fixed;
-    bottom: 20px;
-    right: 30px;
+.message .buttons {
+    margin-top: 1em;
+    text-align: right;
 }
 
 .button {
@@ -920,6 +932,14 @@ header h1, header h2, header h3, header h4, header h5, header h6 {
     color: #8c8c8c;
 }
 
+.text-yellow {
+    color: #f0ff27;
+}
+
+.text-orange {
+    color: #e67700;
+}
+
 aside.panel {
     position: fixed;
     top: 0;
@@ -1007,7 +1027,7 @@ article .body {
     margin-bottom: .5rem;
 }
 
-.panel-body article {
+.panel-body article:not(.naked) {
     border: 1px solid #000;
     background-color: #0002;
 }
@@ -1074,6 +1094,7 @@ body.panel-left-open.panel-right-open .ui-bar {
     padding: 0;
     list-style: none;
     height: calc(100% - 3rem);
+    font-family: Arial, Helvetica, sans-serif;
 }
 
 ul.chat-body li.chat-line {
@@ -1146,6 +1167,7 @@ li.chat-line .badges {
 li.chat-line .user {
     font-weight: bold;
     cursor: pointer;
+    text-shadow: 1px 1px 0 #ccc, -1px 1px 0 #ccc, 1px -1px 0 #ccc, -1px -1px 0 #ccc, 0 1px 0 #ccc, 0 -1px 0 #ccc, -1px 0 0 #ccc, 1px 0 0 #ccc;
 }
 
 li.chat-line [data-action] {
@@ -1189,6 +1211,7 @@ li.chat-line .actions [data-action]:not(:last-of-type):not(:only-child) {
     margin: 0;
     padding: 5px;
     resize: none;
+    font-family: Arial, Helvetica, sans-serif;
 }
 
 #message-icon.has-notification {
@@ -1463,6 +1486,7 @@ li.chat-line .actions [data-action]:not(:last-of-type):not(:only-child) {
         max-width: 100%;
         max-height: 100%;
         overflow: auto;
+        width: 95%;
     }
 
     .panel, .panel.half-width {

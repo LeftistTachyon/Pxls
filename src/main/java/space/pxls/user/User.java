@@ -18,6 +18,7 @@ import java.util.concurrent.TimeUnit;
 public class User {
     private int id;
     private int stacked = 0;
+    private int chatNameColor = 0;
     private String name;
     private String login;
     private String useragent;
@@ -31,6 +32,7 @@ public class User {
     private boolean isPermaChatbanned = false;
     private boolean isRenameRequested = false;
     private String discordName;
+    private String chatbanReason;
     private long cooldownExpiry;
     private long lastPixelTime = 0;
     private long lastUndoTime = 0;
@@ -42,7 +44,7 @@ public class User {
 
     private Set<WebSocketChannel> connections = new HashSet<>();
 
-    public User(int id, int stacked, String name, String login, long cooldownExpiry, Role role, long banExpiryTime, boolean isPermaChatbanned, long chatbanExpiryTime) {
+    public User(int id, int stacked, String name, String login, long cooldownExpiry, Role role, long banExpiryTime, boolean isPermaChatbanned, long chatbanExpiryTime, String chatbanReason, int chatNameColor) {
         this.id = id;
         this.stacked = stacked;
         this.name = name;
@@ -52,6 +54,8 @@ public class User {
         this.banExpiryTime = banExpiryTime;
         this.isPermaChatbanned = isPermaChatbanned;
         this.chatbanExpiryTime = chatbanExpiryTime;
+        this.chatbanReason = chatbanReason;
+        this.chatNameColor = chatNameColor;
     }
 
     public void reloadFromDatabase() {
@@ -67,6 +71,8 @@ public class User {
         this.chatbanExpiryTime = user.chatbanExpiry;
         this.isRenameRequested = user.isRenameRequested;
         this.discordName = user.discordName;
+        this.chatbanReason = user.chatbanReason;
+        this.chatNameColor = user.chatNameColor;
     }
 
     public int getId() {
@@ -280,20 +286,23 @@ public class User {
             case TEMP: {
                 this.isPermaChatbanned = false;
                 this.chatbanExpiryTime = chatban.expiryTime;
-                App.getServer().getPacketHandler().sendChatban(this, new ServerChatBan(false, chatban.expiryTime));
+                this.chatbanReason = chatban.reason;
+                App.getServer().getPacketHandler().sendChatban(this, new ServerChatBan(false, chatban.reason, chatban.expiryTime));
                 App.getDatabase().updateUserChatbanReason(getId(), chatban.reason);
                 break;
             }
             case PERMA: {
                 this.isPermaChatbanned = true;
-                App.getServer().getPacketHandler().sendChatban(this, new ServerChatBan(true, null));
+                this.chatbanReason = chatban.reason;
+                App.getServer().getPacketHandler().sendChatban(this, new ServerChatBan(true, chatban.reason, null));
                 App.getDatabase().updateUserChatbanReason(getId(), chatban.reason);
                 break;
             }
             case UNBAN: {
                 this.isPermaChatbanned = false;
                 this.chatbanExpiryTime = chatban.expiryTime;
-                App.getServer().getPacketHandler().sendChatban(this, new ServerChatBan(false, 0L));
+                this.chatbanReason = chatban.reason;
+                App.getServer().getPacketHandler().sendChatban(this, new ServerChatBan(false, chatban.reason, 0L));
                 break;
             }
         }
@@ -511,6 +520,17 @@ public class User {
         App.getDatabase().setDiscordName(id, discordName);
     }
 
+    public int getChatNameColor() {
+        return this.chatNameColor;
+    }
+
+    public void setChatNameColor(int colorIndex, boolean callDB) {
+        this.chatNameColor = colorIndex;
+        if (callDB) {
+            App.getDatabase().setUserChatNameColor(id, colorIndex);
+        }
+    }
+
     /**
      * Attempts to get placing lock. Weak implementation of a mutex lock.
      * When placingLocked, we're in the process of placing a pixel and database tables pertaining to placements shouldn't be updated until lock is released.
@@ -539,5 +559,9 @@ public class User {
 
     public long getChatbanExpiryTime() {
         return chatbanExpiryTime;
+    }
+
+    public String getChatbanReason() {
+        return chatbanReason;
     }
 }
