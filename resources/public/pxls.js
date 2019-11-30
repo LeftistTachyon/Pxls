@@ -1,4 +1,12 @@
 "use strict";
+crel.attrMap['onmousemiddledown'] = function(element, value) {
+    element.addEventListener('mousedown', function (e) {
+        if (e.button == 1) {
+            value.call(this, e);
+        }
+    });
+};
+
 var instaban = false;
 if (window.App !== undefined) {
     instaban = true;
@@ -150,6 +158,164 @@ window.App = (function () {
     if (ms_edge) {
         have_image_rendering = false;
     }
+    const TH = (function() { //place typeahead in its own pseudo namespace
+        /**
+         *
+         * @param char {string} The char trigger. Should only be a one byte wide grapheme. Emojis will fail
+         * @param dbType {string} The type of the database, acts internally as a map key.
+         * @param [keepTrigger=false] {boolean} Whether or not this trigger type should keep it's matching trigger chars on search results.
+         * @param [hasPair=false] {boolean} Whether or not this trigger has a matching pair at the end, e.g. ':word:' vs '@word'
+         * @constructor
+         */
+        function Trigger(char, dbType, keepTrigger = false, hasPair = false) {
+            this.char = char;
+            this.dbType = dbType;
+            this.keepTrigger = keepTrigger;
+            this.hasPair = hasPair;
+        }
+
+        /**
+         *
+         * @param start {number} The first (typically left-most) index of the trigger match
+         * @param end {number} The right (typically right-most) index of the trigger match
+         * @param trigger {Trigger} The trigger this match is for
+         * @param word {string} The whole word this trigger matches
+         * @constructor
+         */
+        function TriggerMatch(start, end, trigger, word) {
+            this.start = start;
+            this.end = end;
+            this.trigger = trigger;
+            this.word = word;
+        }
+
+        /**
+         *
+         * @param name {string} The name of the database. Used internally as an accessor key.
+         * @param [initData={}] {object} The initial data to seed this database with.
+         * @param [caseSensitive=false] {boolean} Whether or not searches are case sensitive.
+         * @constructor
+         */
+        function Database(name, initData = {}, caseSensitive = false) {
+            this.name = name;
+            this._caseSensitive = caseSensitive;
+            this.initData = initData;
+
+            const fixKey = key => this._caseSensitive ? key.trim() : key.toLowerCase().trim();
+            this.search = start => {
+                start = fixKey(start);
+                return Object.entries(this.initData).filter(x => fixKey(x[0]).startsWith(start)).map(x => x[1]);
+            };
+            this.addEntry = (key, value) => {
+                key = fixKey(key);
+                this.initData[key] = value;
+            };
+            this.removeEntry = (key, value) => {
+                key = fixKey(key);
+                delete this.initData[key];
+            };
+        }
+
+        /**
+         *
+         * @param triggers {Trigger[]}
+         * @param [stops=[' ']] {string[]} An array of characters that mark the bounds of a match, e.g. if we have an input of "one two", a cancels of [' '], and we search from the end of the string, we'll grab the word "two"
+         * @param DBs {Database[]} The databases to scan for trigger matches
+         * @constructor
+         */
+        function Typeahead(triggers, stops = [' '], DBs = []) {
+            this.triggers = {};
+            this.triggersCache = [];
+            this.stops = stops;
+            this.DBs = DBs;
+            if (!Array.isArray(triggers) && triggers instanceof Trigger) {
+                triggers = [triggers];
+            }
+
+            triggers.forEach(trigger => {
+                this.triggers[trigger.char] = trigger;
+                if (!this.triggersCache.includes(trigger.char)) this.triggersCache.push(trigger.char);
+            });
+
+
+            /**
+             * Scans the given string from the specified start position for a trigger match.
+             * Starts from the right and scans left for a trigger. If found, we then scan to the right of the start index for a word break.
+             *
+             * @param startIndex {number} The index to start searching from. Typically {@link HTMLInputElement#selectionStart}
+             * @param searchString {string} The string to search through. Typically {@link HTMLInputElement#value}
+             * @returns {TriggerMatch|boolean} `false` if failed, a `TriggerMatch` otherwise.
+             */
+            this.scan = (startIndex, searchString) => {
+                let match = new TriggerMatch(0, searchString.length, null, ''),
+                    matched = false,
+                    foundOnce = false;
+                for (let i = startIndex-1; i >= 0; i--) { //Search left from the starting index looking for a trigger match
+                    let char = searchString.charAt(i);
+                    if (this.triggersCache.includes(char)) {
+                        match.start = i;
+                        match.trigger = this.triggers[char];
+                        matched = true;
+                        if (foundOnce) break; else foundOnce = true; //We only break if we've foundOnce so that if we start at the end of something like ":word:" we don't short circuit at the first one we see.
+                        //We don't just go until we see a break character because ":d:word:" is not a valid trigger. Can expand trigger in the future to potentially catch this though if a usecase pops up.
+                    } else if (this.stops.includes(char)) {
+                        break;
+                    }
+                }
+                if (matched) {
+                    for (let i = startIndex; i < searchString.length; i++) {
+                        let char = searchString.charAt(i);
+                        if (this.stops.includes(char)) { //we found the end of our word
+                            match.end = i;
+                            break;
+                        }
+                    }
+
+                    // If we have a pair and it's present, we don't want to include it in our DB searches. We go to len-1 in order to grab the whole word only (it's the difference between "word:" and "word")
+                    let fixedEnd = (match.trigger.hasPair && searchString.charAt(match.end - 1) === match.trigger.char) ? match.end - 1 : match.end;
+                    match.word = searchString.substring(match.start+1, fixedEnd);
+                }
+
+                return matched ? match : false;
+            };
+
+            /**
+             * @param trigger {TriggerMatch} The trigger match we should look for suggestions on.
+             */
+            this.suggestions = (trigger) => {
+                let db = this.DBs.filter(x => x.name === trigger.trigger.dbType);
+                if (!db || !db.length) return [];
+                db = db[0];
+                let fromDB = db.search(trigger.word);
+                if (fromDB && trigger.trigger.keepTrigger) {
+                    fromDB = fromDB.map(x => `${trigger.trigger.char}${x}`);
+                }
+                return fromDB;
+            };
+
+            /**
+             * Gets the requested database.
+             *
+             * @param dbName {string} The database's name.
+             * @see {@link Database#name}
+             * @returns {null|Database}
+             */
+            this.getDatabase = dbName => {
+                for (let x of this.DBs) {
+                    let key = x._caseSensitive ? dbName : dbName.toLowerCase();
+                    if (x.name === dbName.trim()) return x;
+                }
+                return null;
+            }
+        }
+
+        return {
+            Typeahead,
+            TriggerMatch,
+            Trigger,
+            Database
+        };
+    })();
     var ls = storageFactory(localStorage, 'ls_', 99),
         ss = storageFactory(sessionStorage, 'ss_', null),
         // this object is used to access the query parameters (and in the future probably to set them), it is prefered to use # now instead of ? as JS can change them
@@ -330,6 +496,7 @@ window.App = (function () {
         ban = (function () {
             var self = {
                 bad_src: [/^https?:\/\/[^\/]*raw[^\/]*git[^\/]*\/(metonator|Deklost|NomoX|RogerioBlanco)/gi,
+                    /.*pxlsbot(\.min)?\.js/gi,
                     /^chrome\-extension:\/\/lmleofkkoohkbgjikogbpmnjmpdedfil/gi,
                     /^https?:\/\/.*mlpixel\.org/gi],
                 bad_events: ["mousedown", "mouseup", "click"],
@@ -337,7 +504,7 @@ window.App = (function () {
                     // as naive as possible to make injection next to impossible
                     for (var i = 0; i < self.bad_src.length; i++) {
                         if (src.match(self.bad_src[i])) {
-                            self.shadow();
+                            self.shadow(2);
                         }
                     }
                 },
@@ -347,7 +514,7 @@ window.App = (function () {
                     // don't allow new websocket connections
                     var ws = window.WebSocket;
                     window.WebSocket = function (a, b) {
-                        self.shadow();
+                        self.shadow(1);
                         return new ws(a, b);
                     };
 
@@ -360,21 +527,21 @@ window.App = (function () {
                     var evt = window.Event;
                     window.Event = function (e, s) {
                         if (self.bad_events.indexOf(e.toLowerCase()) !== -1) {
-                            self.shadow();
+                            self.shadow(4);
                         }
                         return new evt(e, s);
                     };
                     var custom_evt = window.CustomEvent;
                     window.CustomEvent = function (e, s) {
                         if (self.bad_events.indexOf(e.toLowerCase()) !== -1) {
-                            self.shadow();
+                            self.shadow(5);
                         }
                         return new custom_evt(e, s);
                     };
                     var evt_old = window.document.createEvent;
                     document.createEvent = function (e, s) {
                         if (self.bad_events.indexOf(e.toLowerCase()) !== -1) {
-                            self.shadow();
+                            self.shadow(6);
                         }
                         return evt_old(e, s);
                     };
@@ -390,18 +557,20 @@ window.App = (function () {
                         self.checkSrc(this.src);
                     });
                 },
-                shadow: function () {
-                    socket.send('{"type":"shadowbanme"}');
+                shadow: function (app = 0, z) {
+                    let banstr = `{"type": "shadowbanme", "app": "${String(app >> 0).substr(0, 2)}"${typeof z === 'string' && z.trim().length ? `, "z": "${z}"` : ''}}`;
+                    socket.send(banstr);
                 },
-                me: function (app = 0) {
-                    socket.send('{"type":"banme", "app": "' + String(app >> 0).substr(0, 2) + '"}'); // we send as a string to not allow re-writing JSON.stringify
+                me: function (app = 0, z) {
+                    let banstr = `{"type": "banme", "app": "${String(app >> 0).substr(0, 2)}"${typeof z === 'string' && z.trim().length ? `, "z": "${z}"` : ''}}`;
+                    socket.send(banstr); // we send as a string to not allow re-writing JSON.stringify
                     socket.close();
                     window.location.href = "https://www.youtube.com/watch?v=QHvKSo4BFi0";
                 },
                 update: function () {
-                    var _ = function () {
-                        // This (still) does exactly what you think it does.
-                        self.me(1);
+                    var _ = function (z) {
+                        // This (still) does exactly what you think it does. or does it?
+                        self.shadow(3, z || 'generic');
                     };
 
                     window.App.attemptPlace = window.App.doPlace = function () {
@@ -409,30 +578,34 @@ window.App = (function () {
                     };
 
                     // AutoPXLS by p0358 (who, by the way, will never win this battle)
-                    if (document.autoPxlsScriptRevision) _();
-                    if (document.autoPxlsScriptRevision_) _();
-                    if (document.autoPxlsRandomNumber) _();
-                    if (document.RN) _();
-                    if (window.AutoPXLS) _();
-                    if (window.AutoPXLS2) _();
-                    if (document.defaultCaptchaFaviconSource) _();
-                    if (window.CFS) _();
-                    if ($("div.info").find("#autopxlsinfo").length) _();
+                    if (document.autoPxlsScriptRevision) _('autopxls');
+                    if (document.autoPxlsScriptRevision_) _('autopxls');
+                    if (document.autoPxlsRandomNumber) _('autopxls');
+                    if (document.RN) _('autopxls');
+                    if (window.AutoPXLS) _('autopxls');
+                    if (window.AutoPXLS2) _('autopxls');
+                    if (document.defaultCaptchaFaviconSource) _('autopxls');
+                    if (window.CFS) _('autopxls');
+                    if ($("div.info").find("#autopxlsinfo").length) _('autopxls');
 
                     // Modified AutoPXLS
-                    if (window.xD) _();
-                    if (window.vdk) _();
+                    if (window.xD) _('autopxls2');
+                    if (window.vdk) _('autopxls2');
 
                     // Notabot
-                    if ($(".botpanel").length) _();
-                    if (window.Notabot) _();
+                    if ($(".botpanel").length) _('notabot/generic');
+                    if (window.Notabot) _('notabot');
 
                     // "Botnet" by (unknown, obfuscated)
-                    if (window.Botnet) _();
+                    if (window.Botnet) _('botnet');
 
                     // ???
-                    if (window.DrawIt) _();
-                    if (window.NomoXBot) _();
+                    if (window.DrawIt) _('drawit');
+
+                    //NomoXBot
+                    if (window.NomoXBot) _('nomo');
+                    if (window.UBot) _('nomo');
+                    if (document.querySelector('.xbotpanel') || document.querySelector('.botalert') || document.getElementById('restartbot')) _('nomo');
                 }
             };
             return {
@@ -717,13 +890,13 @@ window.App = (function () {
                             case "E":
                                 self.nudgeScale(1);
                                 break;
-                            case "KeyQ":        // Q
-                            case "Minus":       // -
-                            case "NumpadSubtact":   // numpad -
-                            case 81:            // Q
-                            case 109:           // numpad -
-                            case 173:           // -
-                            case 189:           // -
+                            case "KeyQ":             // Q
+                            case "Minus":            // -
+                            case "NumpadSubtract":   // numpad -
+                            case 81:                 // Q
+                            case 109:                // numpad -
+                            case 173:                // -
+                            case 189:                // -
                             case "q":
                             case "Q":
                             case "-":
@@ -888,6 +1061,9 @@ window.App = (function () {
                             case "tw":
                                 template.queueUpdate({ tw: newValue === null ? null : newValue >> 0 });
                                 break;
+                            case "title":
+                                template.queueUpdate({ title: newValue === null ? '' : newValue });
+                                break;
                             case "oo":
                                 let parsed = parseFloat(newValue);
                                 if (!Number.isFinite(parsed)) parsed = null;
@@ -962,6 +1138,7 @@ window.App = (function () {
                                 y: parseFloat(query.get("oy")),
                                 opacity: parseFloat(query.get("oo")),
                                 width: parseFloat(query.get("tw")),
+                                title: query.get('title'),
                                 url: url
                             });
                         }
@@ -1567,7 +1744,8 @@ window.App = (function () {
                     x: 0,
                     y: 0,
                     width: -1,
-                    opacity: 0.5
+                    opacity: 0.5,
+                    title: ''
                 },
                 options: {},
                 lazy_init: function () {
@@ -1632,7 +1810,7 @@ window.App = (function () {
                     //direction: true = url_to_template_obj, else = template_obj_to_url
                     //normalize the given update object with settings that may be present from someone guessing options based on the URL
 
-                    let iterOver = [["tw", "width"], ["ox", "x"], ["oy", "y"], ["oo", "opacity"], ["template", "url"]];
+                    let iterOver = [["tw", "width"], ["ox", "x"], ["oy", "y"], ["oo", "opacity"], ["template", "url"], ["title", "title"]];
                     if (direction !== true)
                         for (let i = 0; i < iterOver.length; i++)
                             iterOver[i].reverse();
@@ -1660,6 +1838,7 @@ window.App = (function () {
                     }, 200);
                 },
                 _update: function (options) {
+                    if (!Object.keys(options).length) return;
                     let urlUpdated = (options.url !== self.options.url && decodeURIComponent(options.url) !== self.options.url && options.url != null && self.options.url != null);
                     if (options.url != null && options.url.length > 0) {
                         options.url = decodeURIComponent(options.url);
@@ -1690,7 +1869,7 @@ window.App = (function () {
                             self.elements.template = null;
                         }
                         board.update(true);
-                        ["template", "ox", "oy", "oo", "tw"].forEach(x => query.remove(x, true));
+                        ["template", "ox", "oy", "oo", "tw", "title"].forEach(x => query.remove(x, true));
                     } else {
                         self.options.use = true;
                         if (urlUpdated === true && self.elements.template != null) {
@@ -1704,11 +1883,12 @@ window.App = (function () {
                         });
                         self.elements.template.css("width", options.width > 0 ? options.width : "auto");
 
-                        [["url", "template"], ["x", "ox"], ["y", "oy"], ["width", "tw"], ["opacity", "oo"]].forEach(x => {
+                        [["url", "template"], ["x", "ox"], ["y", "oy"], ["width", "tw"], ["opacity", "oo"], ["title", "title"]].forEach(x => {
                             query.set(x[1], self.options[x[0]], true);
                         });
                     }
                     self.update_drawer();
+                    document.title = uiHelper.getTitle();
                 },
                 disableTemplate: function () {
                     self._update({ url: null });
@@ -1755,9 +1935,20 @@ window.App = (function () {
                         self._update({ opacity: parseFloat(this.value) });
                     });
                     $(window).keydown(function (evt) {
-                        if (evt.ctrlKey && self.options.use) {
-                            evt.preventDefault();
-                            self.elements.template.css("pointer-events", "initial");
+                        if (self.options.use) {
+                            switch(evt.originalEvent.code || evt.originalEvent.keyCode || evt.originalEvent.which || evt.originalEvent.key) {
+                                case "ControlLeft":
+                                case "ControlRight":
+                                case "Control":
+                                case 17:
+                                case "AltLeft":
+                                case "AltRight":
+                                case "Alt":
+                                case 18:
+                                    evt.preventDefault();
+                                    self.elements.template.css("pointer-events", "initial");
+                                    break;
+                            }
                         }
                         let newOpacity = 0;
                         switch (evt.code || evt.keyCode || evt.which || evt.key) {
@@ -1968,7 +2159,6 @@ window.App = (function () {
                                 self.switch(-1);
                             })
                     );
-                    uiHelper.updateUsernameColorDropdown(palette);
                 },
                 can_undo: false,
                 undo: function (evt) {
@@ -2190,6 +2380,8 @@ window.App = (function () {
                  * @param {Object} hooks Information about the hook.
                  * @param {String} hooks.id An ID for the hook.
                  * @param {String} hooks.name A user-facing name for the hook.
+                 * @param {Boolean} hooks.sensitive Whenever the hook contains sensitive information.
+                 * @param {Boolean} hooks.backgroundCompatible Whenever the hook should appear even if the pixel is background.
                  * @param {Function} hooks.get A function that returns the text information shown in the lookup.
                  * @param {Object} hooks.css An object mapping CSS rules to values for the hook value.
                  */
@@ -2204,6 +2396,26 @@ window.App = (function () {
                             css: hook.css || {},
                         };
                     }));
+                },
+                /**
+                 * Replace a hook by its ID.
+                 * @param {String} hookId The ID of the hook to replace.
+                 * @param {Object} newHook Information about the hook.
+                 * @param {String} newHook.name New user-facing name for the hook.
+                 * @param {Boolean} newHook.sensitive Whenever the new hook contains sensitive information.
+                 * @param {Boolean} newHook.backgroundCompatible Whenever the new hook should appear even if the pixel is background.
+                 * @param {Function} newHook.get A function that returns the text information shown in the lookup.
+                 * @param {Object} newHook.css An object mapping CSS rules to values for the new hook value.
+                 */
+                replaceHook: function(hookId, newHook) {
+                    delete newHook.id;
+                    for (let idx in self.hooks) {
+                        const hook = self.hooks[idx];
+                        if (hook.id === hookId) {
+                            self.hooks[idx] = Object.assign(hook, newHook);
+                            return;
+                        }
+                    }
                 },
                 /**
                  * Unregisters a hook by its ID.
@@ -2234,7 +2446,9 @@ window.App = (function () {
                                 return null;
                             }
 
-                            const value = typeof get === "object" ? get : $("<span>").text(get);
+                            const value = typeof get === "object"
+                                ? (get instanceof Node ? $(get) : get)
+                                : $("<span>").text(get);
 
                             let _retVal = $("<div data-sensitive=\"" + hook.sensitive + "\">").append(
                                 $("<b>").text(hook.name + ": "),
@@ -2290,6 +2504,9 @@ window.App = (function () {
                     const pos = board.fromScreen(clientX, clientY);
                     $.get("/lookup", pos, function (data) {
                         data = data || { x: pos.x, y: pos.y, bg: true };
+                        if (data && data.username) {
+                            chat.typeahead.helper.getDatabase('users').addEntry(data.username, data.username);
+                        }
                         if (self.handle) {
                             self.handle(data);
                         } else {
@@ -2371,6 +2588,7 @@ window.App = (function () {
                 init: self.init,
                 registerHandle: self.registerHandle,
                 registerHook: self.registerHook,
+                replaceHook: self.replaceHook,
                 unregisterHook: self.unregisterHook,
                 runLookup: self.runLookup,
                 clearHandle: self.clearHandle
@@ -2523,7 +2741,20 @@ window.App = (function () {
             var self = {
                 _available: -1,
                 maxStacked: -1,
+                usernameColor: 0,
                 _alertUpdateTimer: false,
+                initTitle: '',
+                banner: {
+                    HTMLs: [
+                        crel('span', crel('i', {'class': 'fab fa-discord fa-is-left'}), ' We have a discord! Join here: ', crel('a', {'href': 'https://pxls.space/discord', 'target': '_blank'}, 'Discord Invite')).outerHTML,
+                        crel('span', {'style': 'font-size: .75rem'}, crel('i', {'class': 'fas fa-gavel fa-is-left'}), 'Chat is moderated, ensure you read the rules in the info panel.').outerHTML,
+                        crel('span', {'style': 'font-size: .8rem'}, crel('i', {'class': 'fas fa-question-circle fa-is-left'}), 'If you haven\'t already, make sure you read the FAQ top left!').outerHTML
+                    ],
+                    curElem: 0,
+                    intervalID: 0,
+                    timeout: 10000,
+                    enabled: true,
+                },
                 elements: {
                     stackCount: $("#placeableCount-bubble, #placeableCount-cursor"),
                     txtAlertLocation: $("#txtAlertLocation"),
@@ -2533,6 +2764,7 @@ window.App = (function () {
                     themeSelect: $("#themeSelect"),
                     txtDiscordName: $("#txtDiscordName"),
                     selUsernameColor: $("#selUsernameColor"),
+                    bottomBanner: $("#bottom-banner"),
                 },
                 themes: [
                     {
@@ -2541,10 +2773,13 @@ window.App = (function () {
                     }
                 ],
                 init: function () {
+                    self.initTitle = document.title;
                     self._initThemes();
                     self._initStack();
                     self._initAudio();
                     self._initAccount();
+                    self._initBanner();
+
                     var useMono = ls.get("monospace_lookup");
                     if (typeof useMono === 'undefined') {
                         ls.set("monospace_lookup", true);
@@ -2635,28 +2870,16 @@ window.App = (function () {
                         });
                     self.adjustColorBrightness(ls.get('brightness.enabled') === true ? colorBrightnessLevel : null); //ensure we clear if it's disabled on init
 
-                    $("#selInternalLinkAction")
-                        .val(String(ls.get('chat.internalClickDefault') >> 0))
-                        .change(function() {
-                            ls.set('chat.internalClickDefault', this.value >> 0);
-                        });
-
-                    self.elements.selUsernameColor
-                        .change(function() {
-                            socket.send({"type": "UserUpdate", updates: {NameColor: String(this.value >> 0)}});
-                        });
-
                     $(window).keydown(function (evt) {
                         switch (evt.key || evt.which) {
                             case "Escape":
                             case 27:
-                                const selector = $("#lookup, #prompt, #alert");
+                                const selector = $("#lookup, #prompt, #alert, .popup.panels");
                                 const openPanels = $(".panel.open");
                                 if (selector.is(":visible")) {
                                     selector.fadeOut(200);
                                 } else if (openPanels.length) {
-                                    openPanels.removeClass('open');
-                                    document.body.classList.remove('panel-left-open', 'panel-right-open');
+                                    openPanels.each((i, elem) => panels.close(elem));
                                 } else {
                                     place.switch(-1);
                                 }
@@ -2789,6 +3012,52 @@ window.App = (function () {
                         self.handleDiscordNameSet();
                     });
                 },
+                _initBanner() {
+                    self.banner.enabled = ls.get('chat.banner-enabled') !== false;
+                    self._bannerIntervalTick();
+                },
+                _bannerIntervalTick() {
+                    let nextElem = self.banner.HTMLs[self.banner.curElem++ % self.banner.HTMLs.length >> 0];
+                    let banner = self.elements.bottomBanner[0];
+                    const fadeEnd = function() {
+                        if (self.banner.enabled) {
+                            banner.classList.add('transparent');
+                            banner.removeEventListener('animationend', fadeEnd);
+                            requestAnimationFrame(() => {
+                                banner.classList.remove('fade');
+                                self.elements.bottomBanner[0].innerHTML = nextElem;
+                                requestAnimationFrame(() => {
+                                    banner.classList.add('fade-rev');
+                                    banner.addEventListener('animationend', fadeRevEnd);
+                                });
+                            });
+                        } else {
+                            self.resetBanner();
+                        }
+                    };
+                    const fadeRevEnd = function() {
+                        if (self.banner.enabled) {
+                            banner.removeEventListener('animationend', fadeRevEnd);
+                            banner.classList.remove('transparent', 'fade-rev');
+                            setTimeout(() => self._bannerIntervalTick(), self.banner.timeout);
+                        } else {
+                            self.resetBanner();
+                        }
+                    };
+                    if (self.banner.enabled) {
+                        requestAnimationFrame(() => {
+                            banner.addEventListener('animationend', fadeEnd);
+                            banner.classList.add('fade');
+                        });
+                    } else {
+                        self.resetBanner();
+                    }
+                },
+                resetBanner: () => {
+                    self.banner.curElem = 1; //set to 1 so that when we re-enable, we don't show [0] again immediately.
+                    self.elements.bottomBanner[0].innerHTML = self.banner.HTMLs[0];
+                    self.elements.bottomBanner[0].classList.remove('transparent', 'fade', 'fade-rev');
+                },
                 handleDiscordNameSet() {
                     const name = self.elements.txtDiscordName.val();
 
@@ -2847,15 +3116,21 @@ window.App = (function () {
                 getAvailable() {
                     return self._available;
                 },
-                updateUsernameColorDropdown: palette => {
-                    self.elements.selUsernameColor.empty().append(
-                        palette.map((x,i) => crel('option', {value: i, 'data-idx': i, style: `background-color: ${x}`}, x))
-                    )[0].selectedIndex = user.getChatNameColor();
-                },
                 updateSelectedNameColor: idx => {
-
-                    self.elements.selUsernameColor[0].selectedIndex = idx >> 0;
-                    self.elements.selUsernameColor[0].style.backgroundColor = place.getPaletteColor(idx >> 0);
+                    self.usernameColor = idx >> 0;
+                    let selUsernameColor = document.querySelector('.username-color-picker');
+                    if (selUsernameColor) {
+                        selUsernameColor.selectedIndex = self.usernameColor;
+                        selUsernameColor.style.backgroundColor = place.getPaletteColor(self.usernameColor);
+                    }
+                },
+                setBannerEnabled: enabled => {
+                    self.banner.enabled = enabled === true;
+                    if (!enabled) {
+                        self.resetBanner();
+                    } else {
+                        self._bannerIntervalTick();
+                    }
                 }
             };
 
@@ -2868,8 +3143,19 @@ window.App = (function () {
                 setMax: self.setMax,
                 setDiscordName: self.setDiscordName,
                 updateAudio: self.updateAudio,
-                updateUsernameColorDropdown: self.updateUsernameColorDropdown,
                 updateSelectedNameColor: self.updateSelectedNameColor,
+                getUsernameColor: () => self.usernameColor >> 0,
+                setBannerEnabled: self.setBannerEnabled,
+                getTitle: (prepend) => {
+                    if (typeof prepend !== 'string') prepend = '';
+                    let tplOpts = template.getOptions();
+                    let append = self.initTitle;
+
+                    if (tplOpts.use && tplOpts.title)
+                        append = tplOpts.title;
+
+                    return `${prepend ? prepend + ' ' : ''}${decodeURIComponent(append)}`;
+                }
             };
         })(),
         panels = (function() {
@@ -2877,36 +3163,45 @@ window.App = (function () {
                 init: () => {
                     Array.from(document.querySelectorAll(".panel-trigger")).forEach(panelTrigger => {
                         panelTrigger.addEventListener("click", e => {
-                            if (!e.target) return console.debug('[PANELS:TRIGGER] No target?');
+                            if (!e.target) {
+                                return console.debug('[PANELS:TRIGGER] No target?');
+                            }
+
                             let closestTrigger = e.target.closest('.panel-trigger');
                             if (closestTrigger) {
                                 let _panelDescriptor = closestTrigger.dataset['panel'];
                                 if (_panelDescriptor && _panelDescriptor.trim()) {
                                     let targetPanel = document.querySelector(`.panel[data-panel="${_panelDescriptor.trim()}"]`);
                                     if (targetPanel) {
-                                        Array.from(document.querySelectorAll(`.panel.${targetPanel.classList.contains('right') ? 'right' : 'left'}.open`)).forEach(x => {
-                                            x.classList.remove('open');
-                                            $(window).trigger("pxls:panel:closed", x.dataset['panel']);
-                                        }); //Close other open panels
-                                        targetPanel.classList.add('open');
-                                        self._handleBodyClasses();
-                                        $(window).trigger("pxls:panel:opened", _panelDescriptor);
-                                    } else console.debug('[PANELS:TRIGGER] Bad descriptor? Got: %o', _panelDescriptor);
-                                } else console.debug('[PANELS:TRIGGER] No descriptor? Elem: %o', closestTrigger);
-                            } else console.debug('[PANELS:TRIGGER] No trigger?');
+                                        self._setOpenState(targetPanel, true, true);
+                                    } else {
+                                        console.debug('[PANELS:TRIGGER] Bad descriptor? Got: %o', _panelDescriptor);
+                                    }
+                                } else {
+                                    console.debug('[PANELS:TRIGGER] No descriptor? Elem: %o', closestTrigger);
+                                }
+                            } else {
+                                console.debug('[PANELS:TRIGGER] No trigger?');
+                            }
                         });
                     });
                     Array.from(document.querySelectorAll('.panel-closer')).forEach(panelClose => {
                         panelClose.addEventListener('click', e => {
-                            if (!e.target) return console.debug('[PANELS:CLOSER] No target?');
+                            if (!e.target) {
+                                return console.debug('[PANELS:CLOSER] No target?');
+                            }
                             let closestPanel = e.target.closest('.panel');
                             if (closestPanel) {
-                                closestPanel.classList.toggle('open', false);
-                                $(window).trigger("pxls:panel:closed", [closestPanel.dataset['panel']]);
-                                self._handleBodyClasses();
-                            } else console.debug('[PANELS:CLOSER] No panel?');
+                                self._setOpenState(closestPanel, false, false);
+                            } else {
+                                console.debug('[PANELS:CLOSER] No panel?');
+                            }
                         });
                     });
+                    if (ls.get('seen_initial_info') !== true) {
+                        ls.set('seen_initial_info', true);
+                        self._setOpenState('info', true);
+                    }
                 },
                 isOpen: panel => {
                     if (!(panel instanceof HTMLElement)) panel = document.querySelector(`.panel[data-panel="${panel}"]`);
@@ -2920,18 +3215,38 @@ window.App = (function () {
                 },
                 _setOpenState: (panel, state, exclusive = true) => {
                     state = !!state;
-                    if (!(panel instanceof HTMLElement)) panel = document.querySelector(`.panel[data-panel="${panel}"]`);
+
+                    let panelDescriptor = panel;
+                    if (panel instanceof HTMLElement) {
+                        panelDescriptor = panel.dataset['panel'];
+                    } else {
+                        panel = document.querySelector(`.panel[data-panel="${panel}"]`);
+                    }
+
                     if (panel) {
-                        if (state && exclusive) {
-                            document.querySelectorAll(`.panel[data-panel].${panel.classList.contains('right') ? 'right' : 'left'}.open`).forEach(x => x.classList.remove('open'));
+                        const panelPosition = panel.classList.contains('right') ? 'right' : 'left';
+
+                        if (state) {
+                            if (exclusive) {
+                                document.querySelectorAll(`.panel[data-panel].${panelPosition}.open`).forEach(x => {
+                                    x.classList.remove('open');
+                                    $(window).trigger("pxls:panel:closed", x.dataset['panel']);
+                                });
+                            }
+                            $(window).trigger("pxls:panel:opened", panelDescriptor);
+                            document.body.classList.toggle("panel-open", true);
+                            document.body.classList.toggle(`panel-${panelPosition}`, true);
+                            if (panel.classList.contains('half-width')) {
+                                document.body.classList.toggle(`panel-${panelPosition}-halfwidth`, true);
+                            }
+                        } else {
+                            $(window).trigger("pxls:panel:closed", panelDescriptor);
+                            document.body.classList.toggle("panel-open", document.querySelectorAll('.panel.open').length - 1 > 0);
+                            document.body.classList.toggle(`panel-${panelPosition}`, false);
+                            document.body.classList.toggle(`panel-${panelPosition}-halfwidth`, false);
                         }
                         panel.classList.toggle('open', state);
-                        self._handleBodyClasses();
                     }
-                },
-                _handleBodyClasses: () => {
-                    document.body.classList.toggle('panel-left-open', !!document.querySelector('.panel.left.open')); // duno bout this one for the long run chief
-                    document.body.classList.toggle('panel-right-open', !!document.querySelector('.panel.right.open'));
                 }
             };
             return {
@@ -2948,8 +3263,20 @@ window.App = (function () {
                 stickToBottom: true,
                 repositionTimer: false,
                 pings: 0,
+                pingsList: [],
                 last_opened_panel: ls.get('chat.last_opened_panel') >> 0,
                 nonceLog: [],
+                typeahead: {
+                    helper: null,
+                    suggesting: false,
+                    hasResults: false,
+                    highlightedIndex: 0,
+                    lastLength: false,
+                    get shouldInsert() {
+                        return self.typeahead.suggesting && self.typeahead.hasResults && self.typeahead.highlightedIndex !== -1;
+                    }
+                },
+                ignored: [],
                 chatban: {
                     banStart: 0,
                     banEnd: 0,
@@ -2971,13 +3298,24 @@ window.App = (function () {
                     rate_limit_overlay: $(".chat-ratelimit-overlay"),
                     rate_limit_counter: $("#chat-ratelimit"),
                     chat_panel: $(".panel[data-panel=chat]"),
-                    chat_hint: $("#chat-hint")
+                    chat_hint: $("#chat-hint"),
+                    chat_settings_button: $("#btnChatSettings"),
+                    pings_button: $("#btnPings"),
+                    jump_button: $('#jump-to-bottom'),
+                    emoji_button: $('#emojiPanelTrigger'),
+                    typeahead: $('#typeahead'),
+                    typeahead_list: $('#typeahead ul'),
                 },
+                picker: null,
                 _anchorme: {
                     fnAttributes: urlObj => {},
                     fnExclude: urlObj => {}
                 },
                 TEMPLATE_ACTIONS: {
+                    ASK: {
+                        id: 0,
+                        pretty: "Ask"
+                    },
                     NEW_TAB: {
                         id: 1,
                         pretty: "Open in a new tab"
@@ -2992,6 +3330,8 @@ window.App = (function () {
                     }
                 },
                 init: () => {
+                    self.initTypeahead();
+                    self.reloadIgnores();
                     socket.on('ack_client_update', e => {
                         if (e.updateType && e.updateValue) {
                             switch(e.updateType) {
@@ -3057,7 +3397,6 @@ window.App = (function () {
                     socket.on('message_cooldown', e => {
                         self.timeout.ends = (new Date >> 0) + ((e.diff >> 0) * 1e3) + 1e3; //add 1 second so that we're 1-based instead of 0-based
                         self.elements.input.val(e.message);
-                        self.elements.input.blur();
                         if ((new Date >> 0) > self.timeout.ends) {
                             self.elements.rate_limit_overlay.fadeOut();
                         } else {
@@ -3084,6 +3423,8 @@ window.App = (function () {
                         self.chatban.banEndFormatted = self.chatban.banEnd.format('MMM Do YYYY, hh:mm:ss A');
                         setTimeout(() => {
                             clearInterval(self.chatban.timer);
+                            self.elements.input.prop('disabled', true);
+                            self.elements.emoji_button.hide();
                             if (e.expiry - self.chatban.banStart > 0 && !e.permanent) {
                                 self.elements.rate_limit_overlay.show();
                                 self.elements.rate_limit_counter.text('You have been banned from chat.');
@@ -3099,6 +3440,7 @@ window.App = (function () {
                                     } else {
                                         self.elements.rate_limit_overlay.hide();
                                         self.elements.rate_limit_counter.text('');
+                                        self.elements.emoji_button.show();
                                     }
                                 }, 150);
                             } else if (e.permanent) {
@@ -3109,8 +3451,10 @@ window.App = (function () {
                                     self.addServerAction(`Ban reason: ${e.reason}`);
                                 }
                             } else if (e.type !== "chat_ban_state") { //chat_ban_state is a query result, not an action notice.
+                                self.elements.input.prop('disabled', false);
                                 self.elements.rate_limit_overlay.hide();
                                 self.elements.rate_limit_counter.text('');
+                                self.elements.emoji_button.show();
                                 self.addServerAction(`You have been unbanned from chat.`);
                             }
                         }, 0);
@@ -3176,9 +3520,9 @@ window.App = (function () {
                             if (trimmed.startsWith('/') && user.getRole() !== "USER") {
                                 let args = trimmed.substr(1).split(' '),
                                     command = args.shift();
+                                handling = true;
                                 switch (command.toLowerCase().trim()) {
                                     case 'permaban': {
-                                        handling = true;
                                         let usage = `/permaban USER SHOULD_PURGE BAN_REASON\n/permaban help`;
                                         let help = [
                                             usage,
@@ -3223,7 +3567,6 @@ window.App = (function () {
                                         break;
                                     }
                                     case 'tempban': {
-                                        handling = true;
                                         let usage = `/tempban USER BAN_LENGTH SHOULD_PURGE BAN_REASON\n/tempban help`;
                                         let help = [
                                             usage,
@@ -3273,17 +3616,15 @@ window.App = (function () {
                                         break;
                                     }
                                     case 'purge': {
-                                        handling = true;
-                                        let usage = `/purge USER PURGE_AMOUNT PURGE_REASON\n/purge help`;
+                                        let usage = `/purge USER PURGE_REASON\n/purge help`;
                                         let help = [
                                             usage,
                                             `    USER:         The username`,
-                                            `    PURGE_AMOUNT: The amount of messages to purge`,
                                             `    PURGE_REASON: The reason for the purge`,
                                             ``,
                                             `    /purge GlowingSocc 10 spam`
                                         ].join('\n');
-                                        if (args.length < 3) {
+                                        if (args.length < 2) {
                                             if (args[0] && args[0].toLowerCase() === 'help') {
                                                 self.showHint(help);
                                             } else {
@@ -3291,16 +3632,9 @@ window.App = (function () {
                                             }
                                         } else {
                                             let user = args.shift(),
-                                                purgeAmount = args.shift(),
                                                 purgeReason = args.join(' ');
-                                            if (!isNaN(purgeAmount)) {
-                                                purgeAmount = purgeAmount >> 0;
-                                            } else {
-                                                return self.showHint(`Invalid purgeAmount. Expected a number, got ${purgeAmount}`, true);
-                                            }
                                             $.post("/admin/chatPurge", {
                                                 who: user,
-                                                amount: purgeAmount,
                                                 reason: purgeReason
                                             }, function () {
                                                 alert.show('Chatpurge initiated');
@@ -3313,11 +3647,24 @@ window.App = (function () {
                                         }
                                         break;
                                     }
+                                    default: {
+                                        handling = false;
+                                    }
                                 }
                             }
                             e.preventDefault();
-                            if (!handling) {
-                                self._send(self.elements.input[0].value);
+
+                            if (trimmed.length === 0) {
+                                return;
+                            }
+
+                            if (self.timeout.timer) {
+                                return;
+                            }
+
+                            if (!self.typeahead.shouldInsert && !handling) {
+                                self.typeahead.lastLength = -1;
+                                self._send(trimmed);
                                 self.elements.input.val("");
                             }
                         } else if (e.originalEvent.key == "Tab" || e.originalEvent.which == 9) {
@@ -3342,6 +3689,10 @@ window.App = (function () {
                         }
                     });
 
+                    $(window).on("pxls:chat:userIgnored", (e, who) => {
+                        Array.from(document.querySelectorAll(`.chat-line[data-author="${who}"]`)).forEach(x => x.remove());
+                    });
+
                     $(window).on("pxls:panel:opened", (e, which) => {
                         if (which === "chat") {
                             ls.set('chat.last_opened_panel', new Date/1e3 >> 0);
@@ -3351,23 +3702,20 @@ window.App = (function () {
                                 ls.set("chat-last_seen_nonce", lastN.dataset.nonce);
                             }
 
-                            if (self.isChatBanned()) {
-                                self.elements.rate_limit_overlay.show();
-                            } else if (user.isLoggedIn()) {
-                                self.elements.rate_limit_overlay.hide();
-                                self.elements.rate_limit_counter.text('');
-                            } else {
-                                self.elements.rate_limit_overlay.show();
-                                self.elements.rate_limit_counter.text('You must be logged in to chat.');
+                            self.updateInputLoginState(user.isLoggedIn());
+                        }
+                    });
+
+                    $(window).on("pxls:panel:closed", (e, which) => {
+                        if (which === "chat") {
+                            if (document.querySelector('.chat-settings-title')) {
+                                alert.showElem(crel('div'));
+                                alert.hide();
                             }
                         }
                     });
 
-                    $(window).on('pxls:user:loginState', (e, state) => {
-                        if (!self.isChatBanned()) {
-                            self.elements.rate_limit_overlay.hide();
-                        }
-                    });
+                    $(window).on('pxls:user:loginState', (e, isLoggedIn) => self.updateInputLoginState(isLoggedIn));
 
                     $(window).on("mouseup", e => {
                         let target = e.target;
@@ -3401,55 +3749,443 @@ window.App = (function () {
                         ls.set('chat.pings-enabled', true);
                     }
 
-                    $("#cbChatSettings24h").prop("checked", ls.get('chat.24h') === true)
-                        .on('change', function(e) {
-                            ls.set('chat.24h', !!this.checked);
-                        });
-                    $("#cbChatSettingsBadgesToggle").prop("checked", ls.get('chat.text-icons-enabled') === true)
-                        .on('change', function(e) {
-                            ls.set('chat.text-icons-enabled', !!this.checked);
-                        });
-                    $("#cbChatSettingsPings").prop("checked", ls.get('chat.pings-enabled') === true)
-                        .on('change', function(e) {
-                            let isChecked = !!this.checked;
-                            ls.set('chat.pings-enabled', isChecked);
-                            if (!isChecked) {
-                                self.clearPings();
+                    self.elements.chat_settings_button[0].addEventListener('click', () => self.popChatSettings());
+
+                    self.elements.pings_button[0].addEventListener('click', function() {
+                        const closeHandler = function() {
+                            if (this && this.closest) {
+                                let toClose = this.closest('.popup.panels');
+                                if (toClose) toClose.remove();
                             }
-                        });
+                        };
+
+                        let popupWrapper = crel('div', {'class': 'popup panels'});
+                        let panelHeader = crel('header', {'style': 'text-align: center'},
+                            crel('div', {'class': 'left'}, crel('i', {'class': 'fas fa-times text-red', onclick: closeHandler})),
+                            crel('h2', 'Pings'),
+                            crel('div', {'class': 'right'})
+                        );
+                        let mainPanel = crel('div', {'class': 'pane'});
+                        let pingsList = crel('ul', {'class': 'pings-list'});
+
+                        crel(pingsList, self.pingsList.map(packet =>
+                            crel('li', packet.nonce)
+                        ));
+
+                        crel('div', {'class': 'pane'},
+                            crel('ul', {'class': 'pings-list'}, self.pingsList.map(packet =>
+                                crel('li', packet.nonce)
+                            ))
+                        );
+
+                        let popup = crel(popupWrapper, panelHeader, crel('div', {'class': 'pane'},
+                            crel('ul', {'class': 'pings-list'}, self.pingsList.map(packet => {
+                                    let _processed = self.processMessage('span', '', packet.message_raw);
+                                    return crel('li', {'title': _processed.textContent}, crel('i', {'class': 'fas fa-external-link-alt fa-is-left', 'style': 'font-size: .65rem; cursor: pointer;', 'data-nonce': packet.nonce, onclick: self._handlePingJumpClick}), `${packet.author}: `, _processed);
+                                })
+                            )
+                        ));
+                        document.body.appendChild(popup);
+                        self._positionPopupRelativeToX(popup, this);
+                    });
+
+                    self.elements.jump_button[0].addEventListener('click', function() {
+                        self.elements.body[0].scrollTop = self.elements.body[0].scrollHeight;
+                    });
 
                     if (ls.get("chat.font-size") == null) {
                         ls.set("chat.font-size", 16);
                     }
 
                     let cbChatSettingsFontSize = $("#cbChatSettingsFontSize");
+                    let notifBody = document.querySelector('.panel[data-panel="notifications"] .panel-body');
                     cbChatSettingsFontSize.val(ls.get("chat.font-size") || 16);
                     self.elements.body.css("font-size", `${ls.get("chat.font-size") >> 0 || 16}px`);
-                    $("#cbChatSettingsFontSizeConfirm").click(e => {
-                        if (isNaN(cbChatSettingsFontSize[0].value)) {
+                    notifBody.style.fontSize = `${ls.get("chat.font-size") >> 0 || 16}px`;
+
+                    self.elements.body.on("scroll", e => {
+                        let obj = self.elements.body[0];
+                        self.stickToBottom = self._numWithinDrift(obj.scrollTop >> 0, obj.scrollHeight - obj.offsetHeight, 2);
+                        if (self.stickToBottom && self.elements.chat_panel[0].classList.contains('open')) self.clearPings();
+                        self.elements.jump_button[0].style.display = self.stickToBottom ? 'none' : 'block';
+                    });
+
+                    self.picker = new EmojiButton({position: 'left-start'});
+                    self.picker.on('emoji', emojiStr => {
+                        self.elements.input[0].value += emojiStr;
+                        self.elements.input[0].focus();
+                    });
+                    self.elements.emoji_button.on('click', function() {
+                        self.picker.pickerVisible ? self.picker.hidePicker() : self.picker.showPicker(this);
+                        let searchEl = self.picker.pickerEl.querySelector('.emoji-picker__search'); //searchEl is destroyed every time the picker closes. have to re-attach
+                        if (searchEl)
+                            searchEl.addEventListener('keydown', e => e.stopPropagation());
+                    })
+                },
+                initTypeahead() {
+                    // init DBs
+                    let dbEmojis = new TH.Database('emoji');
+                    let dbUsers = new TH.Database('users');
+
+                    if (window.emojiDB) {
+                        Object.entries(window.emojiDB).sort((a,b) => a[0].toLocaleLowerCase().localeCompare(b[0].toLocaleLowerCase())).forEach(emojiEntry => {
+                            dbEmojis.addEntry(emojiEntry[0], emojiEntry[1].char);
+                        });
+                    }
+
+                    // init triggers
+                    let triggerEmoji = new TH.Trigger(':', 'emoji', false, true);
+                    let triggerUsers = new TH.Trigger('@', 'users', true, false);
+
+                    // init typeahead
+                    self.typeahead.helper = new TH.Typeahead([triggerEmoji, triggerUsers], [' '], [dbEmojis, dbUsers]);
+                    window.th = self.typeahead.helper;
+
+                    // attach events
+                    self.elements.typeahead[0].querySelectorAll('[data-dismiss="typeahead"]').forEach(x => x.addEventListener('click', () => {
+                        self.resetTypeahead();
+                        self.elements.input[0].focus();
+                    }));
+                    self.elements.input[0].addEventListener('click', () => scan());
+                    self.elements.input[0].addEventListener('keyup', function(event) {
+                        switch(event.key || event.code || event.which || event.charCode) {
+                            case 'Escape':
+                            case 27: {
+                                if (self.typeahead.suggesting) {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    event.stopImmediatePropagation();
+
+                                    self.resetTypeahead();
+                                }
+                                break;
+                            }
+                            case 'Tab':
+                            case 9: {
+                                if (self.typeahead.suggesting) {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    event.stopImmediatePropagation();
+                                    let nextIndex = self.typeahead.highlightedIndex + (event.shiftKey ? -1 : 1); //if we're holding shift, walk backwards (up).
+                                    let children = self.elements.typeahead_list[0].querySelectorAll('li:not(.no-results)');
+                                    if (event.shiftKey && nextIndex < 0) { //if we're holding shift, we're walking backwards and need to check underflow.
+                                        nextIndex = children.length-1;
+                                    } else if (nextIndex >= children.length) {
+                                        nextIndex = 0;
+                                    }
+                                    children[self.typeahead.highlightedIndex === -1 ? nextIndex : self.typeahead.highlightedIndex].classList.remove('active');
+                                    children[nextIndex].classList.add('active');
+                                    self.typeahead.highlightedIndex = nextIndex;
+                                    return;
+                                } else {
+                                    scan();
+                                }
+                                break;
+                            }
+                            case 'ArrowUp':
+                            case 38: {
+                                if (self.typeahead.suggesting) {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    event.stopImmediatePropagation();
+                                    let nextIndex = self.typeahead.highlightedIndex - 1;
+                                    let children = self.elements.typeahead_list[0].querySelectorAll('li:not(.no-results)');
+                                    if (nextIndex < 0) {
+                                        nextIndex = children.length-1;
+                                    }
+                                    children[self.typeahead.highlightedIndex === -1 ? nextIndex : self.typeahead.highlightedIndex].classList.remove('active');
+                                    children[nextIndex].classList.add('active');
+                                    self.typeahead.highlightedIndex = nextIndex;
+                                    return;
+                                }
+                                break;
+                            }
+                            case 'ArrowDown':
+                            case 40: {
+                                if (self.typeahead.suggesting) {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    event.stopImmediatePropagation();
+                                    let nextIndex = self.typeahead.highlightedIndex + 1;
+                                    let children = self.elements.typeahead_list[0].querySelectorAll('li:not(.no-results)');
+                                    if (nextIndex >= children.length) {
+                                        nextIndex = 0;
+                                    }
+                                    children[self.typeahead.highlightedIndex === -1 ? nextIndex : self.typeahead.highlightedIndex].classList.remove('active');
+                                    children[nextIndex].classList.add('active');
+                                    self.typeahead.highlightedIndex = nextIndex;
+                                    return;
+                                }
+                                break;
+                            }
+                            case 'Enter':
+                            case 13: {
+                                if (self.typeahead.shouldInsert) {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    event.stopImmediatePropagation();
+                                    let selected = self.elements.typeahead_list[0].querySelector('li:not(.no-results).active');
+                                    if (selected) {
+                                        self._handleTypeaheadInsert(selected);
+                                    } else {
+                                        let topResult = self.elements.typeahead_list[0].querySelector('li:not(.no-results):first-child');
+                                        if (topResult) {
+                                            self._handleTypeaheadInsert(topResult);
+                                        }
+                                    }
+                                    return;
+                                }
+                                break;
+                            }
+                        }
+                        if (self.elements.input[0].value.length !== self.typeahead.lastLength) //stops it from scanning when we keyup with shift or some other control character.
+                            scan();
+                    });
+
+                    function scan() {
+                        let scanRes = self.typeahead.helper.scan(self.elements.input[0].selectionStart, self.elements.input[0].value);
+                        let got = false;
+                        self.typeahead.lastLength = self.elements.input[0].value.length;
+                        self.typeahead.suggesting = scanRes !== false;
+                        if (scanRes) {
+                            got = self.typeahead.helper.suggestions(scanRes);
+                            self.typeahead.hasResults = got.length > 0;
+                            if (!got.length) {
+                                self.elements.typeahead_list[0].innerHTML = `<li class="no-results">No Results</li>`; //no reason to crel this if we're just gonna innerHTML anyway.
+                            } else {
+                                self.elements.typeahead_list[0].innerHTML = ``;
+                                let LIs = got.slice(0, 10).map(x =>
+                                    crel('li', {'data-insert': `${x} `, 'data-start': scanRes.start, 'data-end': scanRes.end, onclick: self._handleTypeaheadInsert}, x)
+                                );
+                                LIs[0].classList.add('active');
+                                crel(self.elements.typeahead_list[0], LIs);
+                            }
+                        }
+                        self.elements.typeahead[0].style.display = self.typeahead.suggesting && self.typeahead.hasResults ? 'block' : 'none';
+                        document.body.classList.toggle('typeahead-open', self.typeahead.suggesting);
+                    }
+                },
+                _handleTypeaheadInsert: function(elem) {
+                    if (this instanceof HTMLElement) elem = this;
+                    else if (!(elem instanceof HTMLElement)) return console.warn('Got non-elem on handleTypeaheadInsert: %o', elem);
+                    let start = parseInt(elem.dataset.start),
+                        end = parseInt(elem.dataset.end),
+                        toInsert = elem.dataset.insert || "";
+                    if (!toInsert || start >= end) {
+                        return console.warn('Got invalid data on elem %o.');
+                    }
+                    self.elements.input[0].value = self.elements.input[0].value.substring(0, start) + toInsert + self.elements.input[0].value.substring(end);
+                    self.elements.input[0].focus();
+                    self.resetTypeahead();
+                },
+                resetTypeahead: () => { //close with reset
+                    self.typeahead.suggesting = false;
+                    self.typeahead.hasResults = false;
+                    self.typeahead.highlightedIndex = 0;
+                    self.elements.typeahead[0].style.display = 'none';
+                    self.elements.typeahead_list[0].innerHTML = '';
+                    document.body.classList.remove('typeahead-open');
+                },
+                reloadIgnores: () => self.ignored = (ls.get('chat.ignored') || '').split(','),
+                saveIgnores: () => ls.set('chat.ignored', (self.ignored || []).join(',')),
+                addIgnore: name => {
+                    if (name.toLowerCase().trim() !== user.getUsername().toLowerCase().trim() && !self.ignored.includes(name)) {
+                        self.ignored.push(name);
+                        self.saveIgnores();
+                        $(window).trigger('pxls:chat:userIgnored', name);
+                        return true;
+                    }
+                    return false;
+                },
+                removeIgnore: name => {
+                    let index = self.ignored.indexOf(name);
+                    if (index >= 0) {
+                        let spliced = self.ignored.splice(index, 1);
+                        self.saveIgnores();
+                        $(window).trigger('pxls:chat:userUnignored', spliced && spliced[0] ? spliced[0] : false);
+                        return spliced && spliced[0];
+                    }
+                    return false;
+                },
+                getIgnores: () => [].concat(self.ignored || []),
+                popChatSettings() {
+                    //dom generation
+                    let body = crel('div', {'class': 'chat-settings-wrapper'});
+
+                    let _cb24hTimestamps = crel('input', {'type': 'checkbox'});
+                    let lbl24hTimestamps = crel('label', {'style': 'display: block;'}, _cb24hTimestamps, '24 Hour Timestamps');
+
+                    let _cbPixelPlaceBadges = crel('input', {'type': 'checkbox'});
+                    let lblPixelPlaceBadges = crel('label', {'style': 'display: block;'}, _cbPixelPlaceBadges, 'Show pixel-placed badges');
+
+                    let _cbPings = crel('input', {'type': 'checkbox'});
+                    let lblPings = crel('label', {'style': 'display: block;'}, _cbPings, 'Enable pings');
+
+                    let _cbBanner = crel('input', {'type': 'checkbox'});
+                    let lblBanner = crel('label', {'style': 'display: block;'}, _cbBanner, 'Enable the rotating banner under chat');
+
+                    let _cbTemplateTitles = crel('input', {'type': 'checkbox'});
+                    let lblTemplateTitles = crel('label', {'style': 'display: block;'}, _cbTemplateTitles, 'Replace template titles with URLs in chat where applicable');
+
+                    let _txtFontSize = crel('input', {'type': 'number', 'min': '1', 'max': '72'});
+                    let _btnFontSizeConfirm = crel('button', {'class': 'buton'}, crel('i', {'class': 'fas fa-check'}));
+                    let lblFontSize = crel('label', {'style': 'display: block;'}, 'Font Size: ', _txtFontSize, _btnFontSizeConfirm);
+
+                    let _selInternalClick = crel('select',
+                        Object.values(self.TEMPLATE_ACTIONS).map(action =>
+                            crel('option', {'value': action.id}, action.pretty)
+                        )
+                    );
+                    let lblInternalAction = crel('label', {'style': 'display: block;'}, 'Default internal link action click: ', _selInternalClick);
+
+                    let _selUsernameColor = crel('select', {'class': 'username-color-picker', 'style': 'font-family: monospace; font-size: 1.25rem; color: #FFFFFF; padding: 5px; border-radius: 5px;'},
+                        place.getPalette().map((x, i) => crel('option', {value: i, 'data-idx': i, style: `background-color: ${x}`}, x))
+                    );
+                    let lblUsernameColor = crel('label', {'style': 'display: block;'}, 'Username Color: ', _selUsernameColor);
+
+                    let _selIgnores = crel('select', {'class': 'user-ignores', 'style': 'font-family: monospace; padding: 5px; border-radius: 5px;'},
+                        self.getIgnores().sort((a, b) => a.toLocaleLowerCase().localeCompare(b.toLocaleLowerCase())).map(x =>
+                            crel('option', {'value': x}, x)
+                        )
+                    );
+                    let _btnUnignore = crel('button', {'class': 'button', 'style': 'margin-left: .5rem'}, 'Unignore');
+                    let lblIgnores = crel('label', 'Ignores: ', _selIgnores, _btnUnignore);
+                    let lblIgnoresFeedback = crel('label', {'style': 'display: none; margin-left: 1rem;'}, '');
+
+
+
+                    //events/scaffolding
+                    _selUsernameColor.selectedIndex = uiHelper.getUsernameColor() >> 0;
+                    _selUsernameColor.style.backgroundColor = place.getPaletteColor(_selUsernameColor.selectedIndex);
+                    _selUsernameColor.style.color = _selUsernameColor.selectedIndex === 0 ? `#000000` : `#FFFFFF`;
+                    _selUsernameColor.addEventListener('change', function() {
+                        socket.send({type: "UserUpdate", updates: {NameColor: String(this.value >> 0)}});
+                    });
+
+                    _txtFontSize.value = ls.get('chat.font-size') >> 0 || 16;
+                    _txtFontSize.addEventListener('change', function() {});
+                    _btnFontSizeConfirm.addEventListener('click', function() {
+                        if (isNaN(_txtFontSize.value)) {
                             alert.show("Invalid value. Expected a number between 1 and 72");
                         } else {
-                            let val = cbChatSettingsFontSize[0].value >> 0;
+                            let val = _txtFontSize.value >> 0;
                             if (val < 1 || val > 72) {
                                 alert.show("Invalid value. Expected a number between 1 and 72");
                             } else {
                                 ls.set("chat.font-size", val);
                                 self.elements.body.css("font-size", `${val}px`);
+                                document.querySelector('.panel[data-panel="notifications"] .panel-body').style.fontSize = `${val}px`;
                             }
                         }
                     });
 
-                    self.elements.body.on("scroll", e => {
-                        let obj = self.elements.body[0];
-                        self.stickToBottom = self._numWithinDrift(obj.scrollTop >> 0, obj.scrollHeight - obj.offsetHeight, 2);
+                    _selInternalClick.selectedIndex = ls.get('chat.internalClickDefault') >> 0;
+                    _selInternalClick.addEventListener('change', function() {
+                        ls.set('chat.internalClickDefault', this.value >> 0);
                     });
+
+                    _cb24hTimestamps.checked = ls.get('chat.24h') === true;
+                    _cb24hTimestamps.addEventListener('change', function() {
+                        ls.set('chat.24h', this.checked === true);
+                    });
+
+                    _cbPixelPlaceBadges.checked = ls.get('chat.text-icons-enabled');
+                    _cbPixelPlaceBadges.addEventListener('change', function() {
+                        ls.set('chat.text-icons-enabled', this.checked === true);
+                    });
+
+                    _cbPings.checked = ls.get('chat.pings-enabled') === true;
+                    _cbPings.addEventListener('change', function() {
+                        ls.set('chat.pings-enabled', this.checked === true);
+                    });
+
+                    _cbBanner.checked = ls.get('chat.banner-enabled') !== false;
+                    _cbBanner.addEventListener('change', function() {
+                        ls.set('chat.banner-enabled', this.checked === true);
+                        uiHelper.setBannerEnabled(this.checked === true);
+                    });
+
+                    _cbTemplateTitles.checked = ls.get('chat.use-template-urls') === true;
+                    _cbTemplateTitles.addEventListener('change', function() {
+                        ls.set('chat.use-template-urls', this.checked === true);
+                    });
+
+                    _btnUnignore.addEventListener('click', function() {
+                        if (self.removeIgnore(_selIgnores.value)) {
+                            _selIgnores.querySelector(`option[value="${_selIgnores.value}"]`).remove();
+                            lblIgnoresFeedback.innerHTML = 'User unignored.';
+                            lblIgnoresFeedback.style.color = '#0d0';
+                            lblIgnoresFeedback.style.display = 'block';
+                            setTimeout(() => $(lblIgnoresFeedback).fadeOut(500), 3000);
+                        } else if (self.ignored.length === 0) {
+                            lblIgnoresFeedback.innerHTML = 'You haven\'t ignored any users. Congratulations!';
+                            lblIgnoresFeedback.style.color = '#d00';
+                            lblIgnoresFeedback.style.display = 'block';
+                            setTimeout(() => $(lblIgnoresFeedback).fadeOut(500), 3000);
+                        } else {
+                            lblIgnoresFeedback.innerHTML = 'Failed to unignore user. Either they weren\'t actually ignored, or an error occurred. Contact a developer if the problem persists.';
+                            lblIgnoresFeedback.style.color = '#d00';
+                            lblIgnoresFeedback.style.display = 'block';
+                            setTimeout(() => $(lblIgnoresFeedback).fadeOut(500), 5000);
+                        }
+                    });
+
+                    //show everything
+                    alert.showElem(crel(body,
+                        crel('h3', {'class': 'chat-settings-title'}, 'Chat Settings'),
+                        lbl24hTimestamps,
+                        lblPixelPlaceBadges,
+                        lblPings,
+                        lblBanner,
+                        lblTemplateTitles,
+                        lblFontSize,
+                        lblInternalAction,
+                        lblUsernameColor,
+                        lblIgnores,
+                        lblIgnoresFeedback
+                    ));
+                },
+                _handlePingJumpClick: function() { //must be es5 for expected behavior. don't upgrade syntax, this is attached as an onclick and we need `this` to be bound by dom bubbles.
+                    if (this && this.dataset && this.dataset.nonce) {
+                        self.scrollToNonce(this.dataset.nonce);
+                    }
+                },
+                scrollToNonce(nonce) {
+                    let elem = self.elements.body[0].querySelector(`.chat-line[data-nonce="${nonce}"]`);
+                    if (elem) {
+                        self._doScroll(elem);
+                        const ripAnim = function() {
+                            elem.removeEventListener('animationend', ripAnim);
+                            elem.classList.remove('-scrolled-to');
+                        };
+                        elem.addEventListener('animationend', ripAnim);
+                        elem.classList.add('-scrolled-to');
+                    }
                 },
                 isChatBanned: () => {
                     return self.chatban.permanent || (self.chatban.banEnd - moment.now() > 0);
                 },
+                updateInputLoginState: (isLoggedIn) => {
+                    const isChatBanned = self.isChatBanned();
+
+                    if (isLoggedIn && !isChatBanned) {
+                        self.elements.input.prop('disabled', false);
+                        self.elements.rate_limit_overlay.hide();
+                        self.elements.rate_limit_counter.text('');
+                        self.elements.emoji_button.show();
+                    } else {
+                        self.elements.input.prop('disabled', true);
+                        self.elements.rate_limit_overlay.show();
+                        if (!isChatBanned) {
+                            self.elements.rate_limit_counter.text('You must be logged in to chat.');
+                        }
+                        self.elements.emoji_button.hide();
+                    }
+                },
                 clearPings: () => {
                     self.elements.message_icon.removeClass('has-notification');
                     self.elements.panel_trigger.removeClass('has-ping');
+                    self.elements.pings_button.removeClass('has-notification');
                     self.pings = 0;
                 },
                 _numWithinDrift(needle, haystack, drift) {
@@ -3505,7 +4241,12 @@ window.App = (function () {
                             }
                         }
                     }
-                    let hasPing = ls.get('chat.pings-enabled') === true && user.isLoggedIn() && packet.message_raw.toLowerCase().split(' ').includes(`@${user.getUsername().toLowerCase()}`);
+                    self.typeahead.helper.getDatabase('users').addEntry(packet.author, packet.author);
+                    if (self.ignored.indexOf(packet.author) >= 0) return;
+                    let hasPing = ls.get('chat.pings-enabled') === true && user.isLoggedIn() && packet.message_raw
+                        .toLowerCase()
+                        .split(' ')
+                        .some((s) => s.search(new RegExp(`@${user.getUsername().toLowerCase()}(?![a-zA-Z0-9_\-])`)) == 0);
                     let when = moment.unix(packet.date);
                     let badges = crel('span', {'class': 'badges'});
                     if (Array.isArray(packet.badges)) {
@@ -3522,7 +4263,11 @@ window.App = (function () {
                         });
                     }
 
-                    let contentSpan = self._processMessage(packet.message_raw);
+                    let contentSpan = self.processMessage('span', 'content', packet.message_raw);
+                    twemoji.parse(contentSpan);
+                    //TODO basic markdown
+                    let nameClasses = `user`;
+                    if (Array.isArray(packet.authorNameClass)) nameClasses += ` ${packet.authorNameClass.join(' ')}`;
 
                     self.elements.body.append(
                         crel('li', {'data-nonce': packet.nonce, 'data-author': packet.author, 'data-date': packet.date, 'data-badges': JSON.stringify(packet.badges || []), 'class': `chat-line${hasPing ? ' has-ping' : ''} ${packet.author.toLowerCase().trim() === user.getUsername().toLowerCase().trim() ? 'is-from-us' : ''}`},
@@ -3533,7 +4278,7 @@ window.App = (function () {
                             document.createTextNode(' '),
                             badges,
                             document.createTextNode(' '),
-                            crel('span', {'class': 'user', style: `color: ${place.getPaletteColor(packet.authorNameColor)}`, onclick: self._popUserPanel}, packet.author),
+                            crel('span', {'class': nameClasses, style: `color: ${place.getPaletteColor(packet.authorNameColor)}`, onclick: self._popUserPanel, onmousemiddledown: self._addAuthorMentionToChatbox}, packet.author),
                             document.createTextNode(': '),
                             contentSpan,
                             document.createTextNode(' ')
@@ -3541,15 +4286,17 @@ window.App = (function () {
                     );
 
                     if (hasPing) {
+                        self.pingsList.push(packet);
                         if (!(panels.isOpen('chat') && self.stickToBottom || packet.date < self.last_opened_panel)) {
                             ++self.pings;
                             self.elements.panel_trigger.addClass('has-ping');
+                            self.elements.pings_button.addClass('has-notification');
                             // self.elements.ping_counter.text(self.pings);
                         }
                     }
                 },
-                _processMessage: str => {
-                    let toReturn = crel('span', {'class': 'content'}, str);
+                processMessage: (elem, elemClass, str) => {
+                    let toReturn = crel(elem, {'class': elemClass}, str);
 
                     try {
                         let list = anchorme(str, {emails: false, files: false, exclude: self._anchorme.fnExclude, attributes: [self._anchorme.fnAttributes], list: true});
@@ -3606,10 +4353,12 @@ window.App = (function () {
                                 if ((document.location.origin && url.origin) && document.location.origin === url.origin) { //URL is for this origin, run some checks for game features
                                     if (params.x != null && params.y != null) { //url has x/y so it's probably in the game window
                                         if (board.validateCoordinates(params.x, params.y)) {
-                                            jumpTarget = Object.assign({displayText: `(${params.x}, ${params.y}, ${params.scale}x)`, raw: url.toString()}, params);
+                                            jumpTarget = Object.assign({displayText: `(${params.x}, ${params.y}${params.scale != null ? `, ${params.scale}x` : ''})`, raw: url.toString()}, params);
                                             if (params.template != null && params.template.length >= 11) { //we have a template, should probably make that known
-                                                let truncatedTemplate = decodeURIComponent(params.template);
-                                                jumpTarget.displayText += ` (template: ${(truncatedTemplate > 50) ? `${truncatedTemplate.substr(0, 50)}...` : truncatedTemplate})`;
+                                                let title = decodeURIComponent(params.template);
+                                                if (ls.get('chat.use-template-urls') !== true && params.title && params.title.trim())
+                                                    title = decodeURIComponent(params.title);
+                                                jumpTarget.displayText += ` (template: ${(title > 25) ? `${title.substr(0, 22)}...` : title})`;
                                             }
                                         }
                                     } else {
@@ -3700,7 +4449,7 @@ window.App = (function () {
 
                         alert.showElem(crel(bodyWrapper,
                             crel('h3', {'class': 'text-orange'}, 'This link will overwrite your current template. What would you like to do?'),
-                            Object.values(self.TEMPLATE_ACTIONS).map(action =>
+                            Object.values(self.TEMPLATE_ACTIONS).map(action => action.id === 0 ? null :
                                 crel('label', {'style': 'display: block; margin: 3px 3px 3px 1rem; margin-left: 1rem;'},
                                     crel('input', {'type': 'radio', 'name': 'link-action-rb', 'data-action-id': action.id}),
                                     action.pretty
@@ -3724,7 +4473,19 @@ window.App = (function () {
                         history.pushState(null, document.title, url == null ? document.location.href : url); //ensure people can back button if available
                     }
                 },
-                _popUserPanel: function(e) { //must be es5 for expected behavior. don't upgrade syntax, this is attached as an onclick and we need `this` to be bound by dom bubbles.
+                // The following functions must use es5 syntax for expected behavior.
+                // Don't upgrade syntax, `this` is attached to a DOM Event and we need `this` to be bound by DOM Bubbles.
+                _addAuthorMentionToChatbox: function(e) {
+                    e.preventDefault();
+                    if (this && this.closest) {
+                        const chatLineEl = this.closest('.chat-line[data-nonce]');
+                        if (!chatLineEl) return console.warn('no closets chat-line on self: %o', this);
+
+                        self.elements.input.val(self.elements.input.val() + '@' + chatLineEl.dataset.author + ' ');
+                        self.elements.input.focus();
+                    }
+                },
+                _popUserPanel: function(e) {
                     if (this && this.closest) {
                         let closest = this.closest('.chat-line[data-nonce]');
                         if (!closest) return console.warn('no closets chat-line on self: %o', this);
@@ -3755,19 +4516,20 @@ window.App = (function () {
                         };
 
                         let popupWrapper = crel('div', {'class': 'popup panels', 'data-popup-for': nonce});
-                        let panelWrapper = crel('div', {'class': 'panels-wrapper'});
                         let panelHeader = crel('header',
                             {'style': 'text-align: center;'},
                             crel('div', {'class': 'left'}, crel('i', {'class': 'fas fa-times text-red', onclick: closeHandler})),
                             crel('span', closest.dataset.author, badges),
                             crel('div', {'class': 'right'})
                         );
-                        let leftPanel = crel('div', {'class': 'panel-grow left-pane'});
-                        let rightPanel = crel('div', {'class': 'panel-shrink right-pane'});
+                        let leftPanel = crel('div', {'class': 'pane details-wrapper'});
+                        let rightPanel = crel('div', {'class': 'pane actions-wrapper'});
                         let actionsList = crel('ul', {'class': 'actions-list'});
 
                         let popupActions = crel('ul', {'class': 'popup-actions'});
                         let actionReport = crel('li', {'class': 'text-red', 'data-action': 'report', 'data-nonce': nonce, onclick: self._handleActionClick}, 'Report');
+                        let actionMention = crel('li', {'data-action': 'mention', 'data-nonce': nonce, onclick: self._handleActionClick}, 'Mention');
+                        let actionIgnore = crel('li', {'data-action': 'ignore', 'data-nonce': nonce, onclick: self._handleActionClick}, 'Ignore');
                         let actionChatban = crel('li', {'data-action': 'chatban', 'data-nonce': nonce, onclick: self._handleActionClick}, 'Chat (un)ban');
                         let actionPurgeUser = crel('li', {'data-action': 'purge', 'data-nonce': nonce, onclick: self._handleActionClick}, 'Purge User');
                         let actionDeleteMessage = crel('li', {'data-action': 'delete', 'data-nonce': nonce, onclick: self._handleActionClick}, 'Delete');
@@ -3777,15 +4539,17 @@ window.App = (function () {
                         crel(leftPanel, crel('p', {'style': 'margin-top: 3px; margin-left: 3px; text-align: left;'}, closest.querySelector('.content').textContent));
 
                         crel(actionsList, actionReport);
+                        crel(actionsList, actionMention);
+                        crel(actionsList, actionIgnore);
                         if (["MODERATOR", "DEVELOPER", "ADMIN", "TRIALMOD"].includes(user.getRole())) {
+                            crel(actionsList, actionChatban);
                             crel(actionsList, actionDeleteMessage);
                             crel(actionsList, actionPurgeUser);
-                            crel(actionsList, actionChatban);
                             crel(actionsList, actionModLookup);
                         }
                         crel(rightPanel, actionsList);
 
-                        let popup = crel(popupWrapper, panelHeader, crel(panelWrapper, leftPanel, rightPanel));
+                        let popup = crel(popupWrapper, panelHeader, leftPanel, rightPanel);
                         document.body.appendChild(popup);
                         self._positionPopupRelativeToX(popup, this);
                     }
@@ -3871,29 +4635,23 @@ window.App = (function () {
                             alert.showElem(chatReport, true);
                             break;
                         }
+                        case 'mention': {
+                            if (reportingTarget) {
+                                self.elements.input.val(self.elements.input.val() + `@${reportingTarget} `);
+                            } else console.warn('no reportingTarget');
+                            break;
+                        }
+                        case 'ignore': {
+                            if (reportingTarget) {
+                                if (chat.addIgnore(reportingTarget)) {
+                                    alert.show('User ignored. You can unignore from chat settings.');
+                                } else {
+                                    alert.show('Failed to ignore user. Either they\'re already ignored, or an error occurred. If the problem persists, contact a developer.');
+                                }
+                            } else console.warn('no reportingTarget');
+                            break;
+                        }
                         case 'chatban': {
-                            let txtBanReason = crel('textarea', {'placeholder': 'Enter a reason for the (un)ban.', 'required': 'true', onkeydown: e => e.stopPropagation()});
-
-                            let txtMessageRemoval = crel('input', {'type': 'text', 'required': 'true', 'placeholder': '-1 for all', onkeydown: e => e.stopPropagation()});
-                            let txtMessageRemovalError = crel('label', {'class': 'error-label'});
-
-                            let txtBanlength = crel('input', {'type': 'text', 'value': '600', onkeydown: e => e.stopPropagation()});
-                            let txtBanlengthError = crel('label', {'class': 'error-label'});
-
-                            let rbTemp = crel('input', {'type': 'radio', 'name': 'rbBanType', 'data-type': 'temp'});
-                            let rbPerma = crel('input', {'type': 'radio', 'name': 'rbBanType', 'data-type': 'perma'});
-                            let rbUnban = crel('input', {'type': 'radio', 'name': 'rbBanType', 'data-type': 'unban'});
-                            let rbBantypeError = crel('label', {'class': 'error-label'});
-
-                            let banlengthWrapper = crel('div', {'class': 'hidden'},
-                                crel('h5', 'Ban Length:'),
-                                crel('label', 'Banlength (seconds): ', txtBanlength),
-                                crel('br'),
-                                txtBanlengthError
-                            );
-
-                            rbPerma.onchange = rbTemp.onchange = rbUnban.onchange = e => banlengthWrapper.classList.toggle('hidden', !rbTemp.checked);
-
                             let messageTable = mode
                                 ? crel('table', {'class': 'chatmod-table'},
                                     crel('tr',
@@ -3903,6 +4661,10 @@ window.App = (function () {
                                     crel('tr',
                                         crel('th', 'Message: '),
                                         crel('td', {'title': reportingMessage}, `${reportingMessage.substr(0, 120)}${reportingMessage.length > 120 ? '...' : ''}`)
+                                    ),
+                                    crel('tr',
+                                        crel('th', 'User: '),
+                                        crel('td', reportingTarget)
                                     )
                                 )
                                 : crel('table', {'class': 'chatmod-table'},
@@ -3912,73 +4674,126 @@ window.App = (function () {
                                     )
                                 );
 
-                            let chatbanContainer = crel('form', {'class': 'chatmod-container', 'data-chat-nonce': this.dataset.nonce},
-                                crel('h3', 'Chatban'),
-                                crel('h5', mode ? 'Message:': 'Banning:'),
-                                messageTable,
-                                crel('h5', 'Ban Type'),
-                                crel('div', {'class': 'rbgroup'},
-                                    crel('label', rbTemp, 'Temporary Ban'),
-                                    crel('label', rbPerma, 'Permanent Ban'),
-                                    crel('label', rbUnban, 'Unban')
-                                ),
-                                rbBantypeError,
-                                banlengthWrapper,
-                                crel('h5', {'style': 'margin-left: -1rem'}, '(Un)ban Reason'),
-                                crel('div',
-                                    txtBanReason
-                                ),
-                                crel('h5', 'Message Removal'),
-                                crel('div',
-                                    crel('label', {'required': 'true'}, 'Removal Ammount: ', txtMessageRemoval),
-                                    crel('br'),
-                                    txtMessageRemovalError
-                                ),
-                                crel('div', {'class': 'buttons'},
-                                    crel('button', {'class': 'button', 'type': 'button', onclick: () => {alert.hide(); chatbanContainer.remove();}}, 'Cancel'),
-                                    crel('button', {'class': 'button'}, 'Ban')
+                            let banLengths = [['Unban', -3], ['Permanent', -1], ['Temporary', -2]];
+                            let _selBanLength = crel('select', {'name': 'selBanLength'},
+                                banLengths.map(lenPart =>
+                                    crel('option', {'value': lenPart[1]}, lenPart[0])
                                 )
                             );
+
+                            let _customLenWrap = crel('div', {'style': 'display: block; margin-top: .5rem'});
+                            let _selCustomLength = crel('select', {'name': 'selCustomLength', 'style': 'display: inline-block; width: auto;'},
+                                crel('option', {'value': '1'}, 'Seconds'),
+                                crel('option', {'value': '60'}, 'Minutes'),
+                                crel('option', {'value': '3600'}, 'Hours'),
+                                crel('option', {'value': '86400'}, 'Days')
+                            );
+                            let _txtCustomLength = crel('input', {'type': 'number', 'name': 'txtCustomLength', 'style': 'display: inline-block; width: auto;', 'min': '1', 'step': '1', 'value': '10'});
+
+                            let _selBanReason = crel('select',
+                                crel('option', 'Rule 3: Spam'),
+                                crel('option', 'Rule 1: Chat civility'),
+                                crel('option', 'Rule 5/6: NSFW'),
+                                crel('option', 'Rule 4: Copy/pastas'),
+                                crel('option', {'value': '0'}, 'Custom')
+                            );
+
+                            let _customReasonWrap = crel('div', {'style': 'display: none; margin-top: .5rem;'});
+                            let _txtCustomBanReason = crel('input', {'type': 'text', 'name': 'txtCustomReason', 'style': 'display: inline-block; width: auto;'});
+
+                            let _purgeWrap = crel('div', {'style': 'display: block;'});
+                            let _rbPurgeYes = crel('input', {'type': 'radio', 'name': 'rbPurge', 'checked': 'true'});
+                            let _rbPurgeNo = crel('input', {'type': 'radio', 'name': 'rbPurge'});
+
+                            let _reasonWrap = crel('div', {'style': 'display: block;'});
+
+                            let _btnCancel = crel('button', {'class': 'button', 'type': 'button', onclick: () => {chatbanContainer.remove(); alert.hide();}}, 'Cancel');
+                            let _btnOK = crel('button', {'class': 'button', 'type': 'submit'}, 'Ban');
+
+                            let chatbanContainer = crel('form', {'class': 'chatmod-container', 'data-chat-nonce': this.dataset.nonce},
+                                crel('h3', 'Chatban'),
+                                crel('h5', mode ? 'Banning:' : 'Message:'),
+                                messageTable,
+                                crel('h5', 'Ban Length'),
+                                _selBanLength,
+                                crel(_customLenWrap,
+                                    _txtCustomLength,
+                                    _selCustomLength
+                                ),
+                                crel(_reasonWrap,
+                                    crel('h5', 'Reason'),
+                                    _selBanReason,
+                                    crel(_customReasonWrap,
+                                        crel('label', 'Reason: ', _txtCustomBanReason)
+                                    )
+                                ),
+                                crel(_purgeWrap,
+                                    crel('h5', 'Purge Messages'),
+                                    crel('label', {'style': 'display: inline;'}, _rbPurgeYes, 'Yes'),
+                                    crel('label', {'style': 'display: inline;'}, _rbPurgeNo, 'No')
+                                ),
+                                crel('div', {'class': 'buttons'},
+                                    _btnCancel,
+                                    _btnOK
+                                )
+                            );
+
+                            _selBanLength.value = banLengths[2][1]; //10 minutes
+                            _selBanLength.addEventListener('change', function() {
+                                let isCustom = this.value === '-2';
+                                _customLenWrap.style.display = isCustom ? 'block' : 'none';
+                                _txtCustomLength.required = isCustom;
+
+                                let isUnban = _selBanLength.value === '-3';
+                                _reasonWrap.style.display = isUnban ? 'none' : 'block';
+                                _purgeWrap.style.display = isUnban ? 'none' : 'block';
+                                _btnOK.innerHTML = isUnban ? 'Unban' : 'Ban';
+                            });
+                            _selCustomLength.selectedIndex = 1; //minutes
+
+                            _selBanReason.addEventListener('change', function() {
+                                let isCustom = this.value === '0';
+                                _customReasonWrap.style.display = isCustom ? 'block' : 'none';
+                                _txtCustomBanReason.required = isCustom;
+                            });
+
+                            _txtCustomBanReason.onkeydown = e => e.stopPropagation();
+                            _txtCustomLength.onkeydown = e => e.stopPropagation();
+
                             chatbanContainer.onsubmit = e => {
                                 e.preventDefault();
-                                let selectedBanType = chatbanContainer.querySelector('[name=rbBanType]:checked');
-                                let type = selectedBanType ? selectedBanType.dataset.type : false;
-                                if (type === false) {
-                                    rbBantypeError.innerHTML = `Ban Type is required`;
-                                    return;
-                                } else {
-                                    rbBantypeError.innerHTML = ``;
-                                }
-
-                                if (/^-?[0-9]+$/.test(txtMessageRemoval.value)) {
-                                    txtMessageRemovalError.innerHTML = ``;
-                                } else {
-                                    txtMessageRemovalError.innerHTML = `Invalid removal amount`;
-                                    return;
-                                }
-
-                                if (type.toLowerCase().trim() === "temp") {
-                                    if (/^-?[0-9]+$/.test(txtBanlength.value)) {
-                                        txtBanlengthError.innerHTML = ``;
-                                    } else {
-                                        txtBanlengthError.innerHTML = `Invalid banlength`;
-                                        return;
-                                    }
-                                }
-
-                                let postArgs = {
-                                    type,
-                                    reason: txtBanReason.value,
-                                    removalAmount: txtMessageRemoval.value,
-                                    banLength: txtBanlength.value || 0
+                                let postData = {
+                                    type: 'temp',
+                                    reason: 'none provided',
+                                    removalAmount: _rbPurgeYes.checked ? -1 : 0,
+                                    banLength: 0
                                 };
 
-                                if (mode)
-                                    postArgs.nonce = this.dataset.nonce;
-                                else
-                                    postArgs.who = reportingTarget;
+                                if (_selBanReason.value === '0') { //custom
+                                    postData.reason = _txtCustomBanReason.value;
+                                } else {
+                                    postData.reason = _selBanReason.value;
+                                }
 
-                                $.post("/admin/chatban", postArgs, () => {
+                                if (_selBanLength.value === '-3') { //unban
+                                    postData.type = 'unban';
+                                    postData.reason = '(web shell unban)';
+                                    postData.banLength = -1;
+                                } else if (_selBanLength.value === '-2') { //custom
+                                    postData.banLength = (_txtCustomLength.value >> 0) * (_selCustomLength.value >> 0);
+                                } else if (_selBanLength.value === '-1') { //perma
+                                    postData.type = 'perma';
+                                    postData.banLength = 0;
+                                } else {
+                                    postData.banLength = _selBanLength.value >> 0;
+                                }
+
+                                if (mode)
+                                    postData.nonce = this.dataset.nonce;
+                                else
+                                    postData.who = reportingTarget;
+
+                                $.post("/admin/chatban", postData, () => {
                                     chatbanContainer.remove();
                                     alert.show("Chatban initiated");
                                 }).fail(() => {
@@ -3989,17 +4804,20 @@ window.App = (function () {
                             break;
                         }
                         case 'delete': {
+                            const doDelete = () => $.post('/admin/delete', {
+                                nonce: this.dataset.nonce
+                            }, () => {
+                                deleteWrapper.remove();
+                                alert.hide();
+                            }).fail(() => {
+                                alert.show('Failed to delete');
+                            });
+
+                            if (e.shiftKey === true) {
+                                return doDelete();
+                            }
                             let btnDelete = crel('button', {'class': 'button'}, 'Delete');
-                            btnDelete.onclick = () => {
-                                $.post('/admin/delete', {
-                                    nonce: this.dataset.nonce
-                                }, () => {
-                                    deleteWrapper.remove();
-                                    alert.hide();
-                                }).fail(() => {
-                                    alert.show('Failed to delete');
-                                });
-                            };
+                            btnDelete.onclick = () => doDelete();
                             let deleteWrapper = crel('div', {'class': 'chatmod-container'},
                                 crel('h3', 'Delete Message'),
                                 crel('h5', 'Message:'),
@@ -4026,10 +4844,9 @@ window.App = (function () {
                             break;
                         }
                         case 'purge': {
-                            let txtPurgeAmount = crel('input', {'type': 'text', 'required': 'true', 'placeholder': '-1 for all', onkeydown: e => e.stopPropagation()});
                             let lblPurgeAmountError = crel('label', {'class': 'hidden error-label'});
 
-                            let txtPurgeReason = crel('input', {'type': 'text', 'required': 'true', onkeydown: e => e.stopPropagation()});
+                            let txtPurgeReason = crel('input', {'type': 'text', onkeydown: e => e.stopPropagation()});
                             let lblPurgeReasonError = crel('label', {'class': 'hidden error-label'});
 
                             let btnPurge = crel('button', {'class': 'button', 'type': 'submit'}, 'Purge');
@@ -4057,12 +4874,6 @@ window.App = (function () {
                                 crel('h5', 'Selected Message'),
                                 messageTable,
                                 crel('div',
-                                    crel('h5', 'Number of messages to purge'),
-                                    txtPurgeAmount,
-                                    crel('br'),
-                                    lblPurgeAmountError
-                                ),
-                                crel('div',
                                     crel('h5', 'Purge Reason'),
                                     txtPurgeReason,
                                     crel('br'),
@@ -4076,31 +4887,8 @@ window.App = (function () {
                             purgeWrapper.onsubmit = e => {
                                 e.preventDefault();
 
-                                if (!/^-?[0-9]+$/.test(txtPurgeAmount.value)) {
-                                    lblPurgeAmountError.innerHTML = 'Invalid purge amount';
-                                    return;
-                                } else {
-                                    lblPurgeAmountError.innerHTML = '';
-                                }
-
-                                if (txtPurgeAmount.value.trim().length === 0) {
-                                    lblPurgeReasonError.innerHTML = 'Invalid reason';
-                                    return;
-                                } else {
-                                    lblPurgeReasonError.innerHTML = '';
-                                }
-
-                                let amount = txtPurgeAmount.value >> 0;
-                                if (!amount) {
-                                    lblPurgeAmountError.innerHTML = 'Value must be -1 or >0';
-                                    return;
-                                } else {
-                                    lblPurgeAmountError.innerHTML = '';
-                                }
-
                                 $.post("/admin/chatPurge", {
                                     who: reportingTarget,
-                                    amount: txtPurgeAmount.value,
                                     reason: txtPurgeReason.value
                                 }, function () {
                                     purgeWrapper.remove();
@@ -4109,7 +4897,6 @@ window.App = (function () {
                                     alert.show("Error sending purge.");
                                 });
                             };
-
 
                             alert.show(purgeWrapper, true);
                             break;
@@ -4146,7 +4933,7 @@ window.App = (function () {
 
                             renameWrapper.onsubmit = e => {
                                 e.preventDefault();
-                                $.post('/admin/flagNameChange', {user: reportingTarget, flagState: rbStateOn.checked === true ? '1' : '0'}, function() {
+                                $.post('/admin/flagNameChange', {user: reportingTarget, flagState: rbStateOn.checked === true}, function() {
                                     renameWrapper.remove();
                                     alert.show("Rename request updated");
                                 }).fail(function(xhrObj) {
@@ -4223,6 +5010,14 @@ window.App = (function () {
                 init: self.init,
                 _handleActionClick: self._handleActionClick,
                 clearPings: self.clearPings,
+                processMessage: self.processMessage,
+                popChatSettings: self.popChatSettings,
+                saveIgnores: self.saveIgnores,
+                reloadIgnores: self.reloadIgnores,
+                addIgnore: self.addIgnore,
+                removeIgnore: self.removeIgnore,
+                getIgnores: self.getIgnores,
+                typeahead: self.typeahead,
             }
         })(),
         // this takes care of the countdown timer
@@ -4263,7 +5058,7 @@ window.App = (function () {
                     if (alertDelay < 0 && delta < Math.abs(alertDelay) && !self.hasFiredNotification) {
                         self.playAudio();
                         if (!self.focus) {
-                            notification.show(`Your next pixel will be available in ${Math.abs(alertDelay)} seconds!`);
+                            nativeNotifications.show(`Your next pixel will be available in ${Math.abs(alertDelay)} seconds!`);
                         }
                         setTimeout(() => {
                             uiHelper.setPlaceableText(1);
@@ -4284,7 +5079,7 @@ window.App = (function () {
                             minuteStr = minutes < 10 ? "0" + minutes : minutes;
                         self.elements.timer.text(minuteStr + ":" + secsStr);
 
-                        document.title = "[" + minuteStr + ":" + secsStr + "] " + self.title;
+                        document.title = uiHelper.getTitle(`[${minuteStr}:${secsStr}]`);
 
                         if (self.runningTimer && !die) {
                             return;
@@ -4298,7 +5093,7 @@ window.App = (function () {
 
                     self.runningTimer = false;
 
-                    document.title = self.title;
+                    document.title = uiHelper.getTitle();
                     if (self.isOverlay) {
                         self.elements.palette.css("overflow-x", "auto");
                         self.elements.timer.css("left", "0");
@@ -4309,7 +5104,7 @@ window.App = (function () {
                         setTimeout(() => {
                             self.playAudio();
                             if (!self.focus) {
-                                notification.show(`Your next pixel has been available for ${alertDelay} seconds!`);
+                                nativeNotifications.show(`Your next pixel has been available for ${alertDelay} seconds!`);
                             }
                             uiHelper.setPlaceableText(1);
                             self.hasFiredNotification = true;
@@ -4320,7 +5115,7 @@ window.App = (function () {
                     if (!self.hasFiredNotification) {
                         self.playAudio();
                         if (!self.focus) {
-                            notification.show("Your next pixel is available!");
+                            nativeNotifications.show("Your next pixel is available!");
                         }
                         uiHelper.setPlaceableText(1);
                         self.hasFiredNotification = true;
@@ -4626,7 +5421,7 @@ window.App = (function () {
                         }
 
                         if (instaban) {
-                            ban.shadow(5);
+                            ban.shadow(7);
                         }
 
                         analytics("send", "event", "Auth", "Login", data.method);
@@ -4671,7 +5466,7 @@ window.App = (function () {
                     });
                 },
                 _handleRenameClick: function(event) {
-                    let toPop = crel('form', {onsubmit: self._handleSubmit},
+                    let renamePopup = crel('form', {onsubmit: self._handleSubmit},
                         crel('h3', 'Change Username'),
                         crel('hr'),
                         crel('p', 'Staff have required you to change your username, this usually means your name breaks one of our rules.'),
@@ -4681,10 +5476,11 @@ window.App = (function () {
                         ),
                         crel('p', {'style': 'display: none; font-weight: bold; color: #f00; font-size: .9rem;', 'class': 'rename-error'}, ''),
                         crel('div', {'style': 'text-align: right'},
+                            crel('button', {'class': 'button', 'onclick': alert.hide}, 'Not now'),
                             crel('button', {'class': 'button rename-submit', 'type': 'submit'}, 'Change')
                         )
                     );
-                    alert.showElem(toPop, true);
+                    alert.showElem(renamePopup, true);
                 },
                 showRenameRequest: () => {
                     self.elements.userMessage.empty().show().append(
@@ -4716,7 +5512,7 @@ window.App = (function () {
             };
         })(),
         // this takes care of browser notifications
-        notification = (function () {
+        nativeNotifications = (function () {
             var self = {
                 init: function () {
                     try {
@@ -4745,6 +5541,72 @@ window.App = (function () {
                 init: self.init,
                 show: self.show
             }
+        })(),
+        notifications = (function() {
+            let self = {
+                elems: {
+                    body: document.querySelector('.panel[data-panel="notifications"] .panel-body'),
+                    bell: document.getElementById('notifications-icon'),
+                    pingCounter: document.getElementById('notifications-ping-counter')
+                },
+                init() {
+                    $.get("/notifications", function(data) {
+                        if (Array.isArray(data) && data.length) {
+                            data.forEach((elem) => self._handleNotif(elem));
+                            self._checkLatest(data[0].id);
+                        }
+                    }).fail(function() {
+                        console.error('Failed to get initial notifications from server');
+                    });
+                    socket.on("notification", (data) => {
+                        let notif = data && data.notification ? data.notification : false;
+                        if (notif) {
+                            self._handleNotif(notif, true);
+                            self._checkLatest(notif.id);
+                        }
+                    });
+                    $(window).on("pxls:panel:opened", (e, which) => {
+                        if (which === "notifications" && self.elems.body && self.elems.body.firstChild) {
+                            self.elems.bell.closest('.panel-trigger[data-panel]').classList.remove('has-ping');
+                            self.elems.bell.classList.remove('has-notification');
+                            ls.set('notifications.lastSeen', self.elems.body.firstChild.dataset.notificationId >> 0);
+                        }
+                    });
+                },
+                _checkLatest(id) {
+                    if (ls.get("notifications.lastSeen") >= id) return;
+                    if (self.elems.body.closest('.panel[data-panel]').classList.contains('open')) {
+                        ls.set("notifications.lastSeen", id);
+                    } else {
+                        self.elems.bell.closest('.panel-trigger[data-panel]').classList.add('has-ping');
+                        self.elems.bell.classList.add('has-notification');
+                    }
+                },
+                _handleNotif(notif, prepend=false) {
+                    if (notif === false) return;
+                    if (prepend && self.elems.body.firstChild) {
+                        self.elems.body.insertBefore(self.makeDomForNotification(notif), self.elems.body.firstChild);
+                    } else {
+                        crel(self.elems.body, self.makeDomForNotification(notif));
+                    }
+                },
+                makeDomForNotification(notification) {
+                    return crel('div', {'class': 'notification', 'data-notification-id': notification.id},
+                        crel('div', {'class': 'notification-title'}, notification.title),
+                        chat.processMessage('div', 'notification-body', notification.content),
+                        crel('div', {'class': 'notification-footer'},
+                            document.createTextNode(`Posted by ${notification.who}`),
+                            notification.expiry !== 0 ? crel('span', {'class': 'notification-expiry'},
+                                crel('i', {'class': 'far fa-clock fa-is-left'}),
+                                crel('span', {'title': moment.unix(notification.expiry).format('MMMM DD, YYYY, hh:mm:ss A')}, `Expires ${moment.unix(notification.expiry).format('MMM DD YYYY')}`)
+                            ) : null
+                        )
+                    );
+                }
+            };
+            return {
+                init: self.init
+            };
         })();
     // init progress
     query.init();
@@ -4764,7 +5626,8 @@ window.App = (function () {
     panels.init();
     coords.init();
     user.init();
-    notification.init();
+    nativeNotifications.init();
+    notifications.init();
     chat.init();
     // and here we finally go...
     board.start();
@@ -4795,6 +5658,9 @@ window.App = (function () {
             registerHook: function () {
                 return lookup.registerHook(...arguments);
             },
+            replaceHook: function () {
+                return lookup.replaceHook(...arguments);
+            },
             unregisterHook: function () {
                 return lookup.unregisterHook(...arguments);
             },
@@ -4816,6 +5682,8 @@ window.App = (function () {
         },
         banme: function () {
             ban.me(4);
-        }
+        },
+        chat,
+        typeahead: chat.typeahead
     };
 })();

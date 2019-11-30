@@ -14,6 +14,7 @@ import io.undertow.util.StatusCodes;
 import space.pxls.App;
 import space.pxls.auth.*;
 import space.pxls.data.DBChatMessage;
+import space.pxls.data.DBNotification;
 import space.pxls.data.DBPixelPlacement;
 import space.pxls.data.DBPixelPlacementUser;
 import space.pxls.user.Chatban;
@@ -22,10 +23,15 @@ import space.pxls.user.User;
 import space.pxls.util.AuthReader;
 import space.pxls.util.IPReader;
 import space.pxls.util.RateLimitFactory;
+import space.pxls.util.SimpleDiscordWebhook;
 
 import java.io.*;
 import java.net.URLEncoder;
 import java.nio.ByteBuffer;
+import java.sql.Timestamp;
+import java.time.Instant;
+import java.time.Year;
+import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
@@ -71,7 +77,7 @@ public class WebHandler {
         }
         ClassPathResourceManager cprm = new ClassPathResourceManager(App.class.getClassLoader(), "public/");
         String s = resourceToString("/public/index.html");
-        String[] replacements = {"title", "head", "info"};
+        String[] replacements = {"title", "head", "info", "faq"};
         for (String p : replacements) {
             String r = App.getConfig().getString("html." + p);
             if (r == null) {
@@ -155,7 +161,7 @@ public class WebHandler {
                 time = time_form.getValue();
             }
             if (doLog(exchange)) {
-                App.getDatabase().adminLog(String.format("ban %s with reason: %s", user.getName(), getBanReason(exchange)), user_perform.getId());
+                App.getDatabase().insertAdminLog(user_perform.getId(), String.format("ban %s with reason: %s", user.getName(), getBanReason(exchange)));
             }
             user.ban(Integer.parseInt(time), getBanReason(exchange), getRollbackTime(exchange), user_perform);
             exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/text");
@@ -166,17 +172,25 @@ public class WebHandler {
     }
 
     public void unban(HttpServerExchange exchange) {
-        User user = parseUserFromForm(exchange);
         User user_perform = exchange.getAttachment(AuthReader.USER);
-        if (user != null) {
-            user.unban(user_perform, "");
-            exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/text");
-            if (doLog(exchange)) {
-                App.getDatabase().adminLog("unban " + user.getName(), user_perform.getId());
+        FormData data = exchange.getAttachment(FormDataParser.FORM_DATA);
+        if (data.contains("username")) {
+            User unbanTarget = App.getUserManager().getByName(data.getFirst("username").getValue());
+            if (unbanTarget != null) {
+                String reason = "";
+                if (data.contains("reason")) {
+                    reason = data.getFirst("reason").getValue();
+                }
+                unbanTarget.unban(user_perform, reason);
+                if (doLog(exchange)) {
+                    App.getDatabase().insertAdminLog(user_perform.getId(), String.format("unban %s with reason %s", unbanTarget.getName(), reason.isEmpty() ? "(no reason provided)" : reason));
+                }
+                send(200, exchange, "User unbanned");
+            } else {
+                sendBadRequest(exchange, "Invalid user specified");
             }
-            exchange.setStatusCode(200);
         } else {
-            exchange.setStatusCode(400);
+            sendBadRequest(exchange, "Missing username field");
         }
     }
 
@@ -187,7 +201,7 @@ public class WebHandler {
             user.permaban(getBanReason(exchange), getRollbackTime(exchange), user_perform);
             exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/text");
             if (doLog(exchange)) {
-                App.getDatabase().adminLog(String.format("permaban %s with reason: %s", user.getName(), getBanReason(exchange)), user_perform.getId());
+                App.getDatabase().insertAdminLog(user_perform.getId(), String.format("permaban %s with reason: %s", user.getName(), getBanReason(exchange)));
             }
             exchange.setStatusCode(200);
         } else {
@@ -202,7 +216,7 @@ public class WebHandler {
             user.shadowban(getBanReason(exchange), getRollbackTime(exchange), user_perform);
             exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/text");
             if (doLog(exchange)) {
-                App.getDatabase().adminLog(String.format("shadowban %s with reason: %s", user.getName(), getBanReason(exchange)), user_perform.getId());
+                App.getDatabase().insertAdminLog(user_perform.getId(), String.format("shadowban %s with reason: %s", user.getName(), getBanReason(exchange)));
             }
             exchange.setStatusCode(200);
         } else {
@@ -249,7 +263,7 @@ public class WebHandler {
 
         String _reportMessage = reportMessage.getValue().trim();
         if (_reportMessage.length() > 2048) _reportMessage = _reportMessage.substring(0, 2048);
-        App.getDatabase().addChatReport(chatMessage.nonce, chatMessage.author_uid, user.getId(), _reportMessage);
+        App.getDatabase().insertChatReport(chatMessage.nonce, chatMessage.author_uid, user.getId(), _reportMessage);
 
         exchange.setStatusCode(200);
         exchange.getResponseSender().send("{}");
@@ -400,7 +414,7 @@ public class WebHandler {
             return;
         }
 
-        App.getDatabase().purgeChatMessageByNonce(chatMessage.nonce, user.getId());
+        App.getDatabase().purgeChat(chatMessage.nonce, user.getId());
         App.getServer().getPacketHandler().sendSpecificPurge(author, user, chatMessage.nonce, "");
 
         send(StatusCodes.OK, exchange, "");
@@ -422,19 +436,17 @@ public class WebHandler {
 
         FormData data = exchange.getAttachment(FormDataParser.FORM_DATA);
         FormData.FormValue targetData = null;
-        FormData.FormValue amountData = null;
         FormData.FormValue reasonData = null;
 
         try {
             targetData = data.getFirst("who");
-            amountData = data.getFirst("amount");
             reasonData = data.getFirst("reason");
         } catch (NullPointerException npe) {
             sendBadRequest(exchange);
             return;
         }
 
-        if (targetData == null || amountData == null || reasonData == null) {
+        if (targetData == null) {
             sendBadRequest(exchange);
             return;
         }
@@ -445,21 +457,12 @@ public class WebHandler {
             return;
         }
 
-        Integer toPurge;
-        try {
-            toPurge = Integer.parseInt(amountData.getValue());
-        } catch (Exception e) {
-            sendBadRequest(exchange);
-            return;
+        String purgeReason = "$No reason provided.";
+        if (data.contains("reason")) {
+            purgeReason = data.getFirst("reason").getValue();
         }
 
-        if (toPurge == 0) {
-            sendBadRequest(exchange);
-            return;
-        }
-        if (toPurge == -1) toPurge = Integer.MAX_VALUE;
-
-        App.getDatabase().handlePurge(target, user, toPurge, reasonData.getValue(), true);
+        App.getDatabase().purgeChat(target, user, Integer.MAX_VALUE, reasonData.getValue(), true);
 
         exchange.setStatusCode(200);
         exchange.getResponseSender().send("{}");
@@ -498,7 +501,7 @@ public class WebHandler {
 
         String oldName = toUpdate.getName();
         if (toUpdate.updateUsername(newName, true)) {
-            App.getDatabase().adminLog(String.format("Changed %s's name to %s (uid: %d)", oldName, newName, toUpdate.getId()), user.getId());
+            App.getDatabase().insertAdminLog(user.getId(), String.format("Changed %s's name to %s (uid: %d)", oldName, newName, toUpdate.getId()));
             toUpdate.setRenameRequested(false);
             App.getServer().send(toUpdate, new ServerRenameSuccess(toUpdate.getName()));
             exchange.setStatusCode(200);
@@ -532,7 +535,7 @@ public class WebHandler {
 
         String oldName = user.getName();
         if (user.updateUsername(newName)) {
-            App.getDatabase().addServerReport(String.format("User %s just changed their name to %s.", oldName, user.getName()), user.getId());
+            App.getDatabase().insertServerReport(user.getId(), String.format("User %s just changed their name to %s.", oldName, user.getName()));
             user.setRenameRequested(false);
             App.getServer().send(user, new ServerRenameSuccess(user.getName()));
             exchange.setStatusCode(200);
@@ -562,7 +565,7 @@ public class WebHandler {
             return;
         }
         try {
-            isRequested = data.getFirst("flagState").getValue().equalsIgnoreCase("1");
+            isRequested = data.getFirst("flagState").getValue().equalsIgnoreCase("true");
         } catch (Exception e) {
             //ignored
         }
@@ -574,7 +577,7 @@ public class WebHandler {
         }
 
         toFlag.setRenameRequested(isRequested);
-        App.getDatabase().adminLog(String.format("Flagged %s (%d) for name change", toFlag.getName(), toFlag.getId()), user.getId());
+        App.getDatabase().insertAdminLog(user.getId(), String.format("Flagged %s (%d) for name change", toFlag.getName(), toFlag.getId()));
 
         exchange.setStatusCode(200);
         exchange.getResponseSender().send("{}");
@@ -632,6 +635,154 @@ public class WebHandler {
         }
     }
 
+    public void createNotification(HttpServerExchange exchange) {
+        exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
+
+        User user = exchange.getAttachment(AuthReader.USER);
+        if (user == null) {
+            sendBadRequest(exchange, "No authenticated users found");
+            return;
+        }
+        if (user.getRole().lessThan(Role.DEVELOPER)) {
+            send(StatusCodes.FORBIDDEN, exchange, "Invalid permissions");
+            return;
+        }
+        FormData data = exchange.getAttachment(FormDataParser.FORM_DATA);
+        String title = null;
+        String body = null;
+        Long expiry = 0L;
+        boolean discord = false;
+        try {
+            title = data.getFirst("txtTitle").getValue();
+            body = data.getFirst("txtBody").getValue();
+            expiry = 0L;
+        } catch (Exception npe) {
+            sendBadRequest(exchange, "Missing either 'txtTitle' or 'txtBody' fields");
+            return;
+        }
+        if (data.contains("discord")) {
+            try {
+                discord = data.getFirst("discord").getValue().trim().equalsIgnoreCase("true");
+            } catch (Exception e) {
+                sendBadRequest(exchange, "Invalid discord value");
+                return;
+            }
+        }
+        if (data.contains("expiry")) {
+            try {
+                expiry = Long.parseLong(data.getFirst("expiry").getValue().trim());
+            } catch (Exception e) {
+                sendBadRequest(exchange, "Invalid expiry value");
+                return;
+            }
+        }
+        try {
+            int notifID = App.getDatabase().createNotification(user.getId(), title, body, Instant.ofEpochMilli(expiry).getEpochSecond());
+            App.getServer().broadcast(new ServerNotification(App.getDatabase().getNotification(notifID))); //re-fetch to ensure we're returning exact time and expiry 'n whatnot from the database.
+        } catch (Exception e) {
+            e.printStackTrace();
+            send(StatusCodes.INTERNAL_SERVER_ERROR, exchange, "Failed to create notification");
+            return;
+        }
+        if (discord) {
+            handleNotificationWebhook(exchange, title, body);
+        } else {
+            send(StatusCodes.OK, exchange, "");
+        }
+    }
+
+    public void sendNotificationToDiscord(HttpServerExchange exchange) {
+        exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
+        User user = exchange.getAttachment(AuthReader.USER);
+        if (user == null) {
+            sendBadRequest(exchange, "No authenticated users found");
+            return;
+        }
+        if (user.getRole().lessThan(Role.DEVELOPER)) {
+            send(StatusCodes.FORBIDDEN, exchange, "Invalid permissions");
+            return;
+        }
+        FormData data = exchange.getAttachment(FormDataParser.FORM_DATA);
+        int notificationID = -1;
+        if (!data.contains("id")) {
+            sendBadRequest(exchange, "Missing notification id");
+            return;
+        }
+        try {
+            notificationID = Integer.parseInt(data.getFirst("id").getValue().trim());
+        } catch (Exception e) {
+            sendBadRequest(exchange, "Invalid notification id");
+        }
+        DBNotification notif = App.getDatabase().getNotification(notificationID);
+        if (notif == null) {
+            send(StatusCodes.NOT_FOUND, exchange, "Notification doesn't exist");
+        } else {
+            handleNotificationWebhook(exchange, notif.title, notif.content);
+        }
+    }
+
+    public void setNotificationExpired(HttpServerExchange exchange) {
+        exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
+        User user = exchange.getAttachment(AuthReader.USER);
+        if (user == null) {
+            sendBadRequest(exchange, "No authenticated users found");
+            return;
+        }
+        if (user.getRole().lessThan(Role.DEVELOPER)) {
+            send(StatusCodes.FORBIDDEN, exchange, "Invalid permissions");
+            return;
+        }
+        FormData data = exchange.getAttachment(FormDataParser.FORM_DATA);
+        int notificationID = -1;
+        boolean shouldBeExpired = false;
+        if (!data.contains("id")) {
+            sendBadRequest(exchange, "Missing notification id");
+            return;
+        }
+        try {
+            notificationID = Integer.parseInt(data.getFirst("id").getValue().trim());
+        } catch (Exception e) {
+            sendBadRequest(exchange, "Invalid notification id");
+        }
+        try {
+            notificationID = Integer.parseInt(data.getFirst("id").getValue().trim());
+        } catch (Exception e) {
+            sendBadRequest(exchange, "Invalid notification id");
+        }
+        if (App.getDatabase().getNotification(notificationID) == null) {
+            send(StatusCodes.NOT_FOUND, exchange, "Notification doesn't exist");
+            return;
+        }
+        try {
+            shouldBeExpired = data.getFirst("expired").getValue().trim().equalsIgnoreCase("true");
+        } catch (Exception e) {
+            sendBadRequest(exchange, "Invalid 'expired'");
+            return;
+        }
+        App.getDatabase().setNotificationExpiry(notificationID, shouldBeExpired ? 1L : 0L);
+        send(StatusCodes.OK, exchange, "");
+    }
+
+    private void handleNotificationWebhook(HttpServerExchange exchange, String title, String body) {
+        String webhookURL = App.getConfig().getString("webhooks.announcements");
+        if (webhookURL.isEmpty()) {
+            send(StatusCodes.INTERNAL_SERVER_ERROR, exchange, "No announcement webhook is configured");
+        } else {
+            if (SimpleDiscordWebhook.forWebhookURL(webhookURL).content(String.format("**%s**\n\n%s", title, body)).execute()) {
+                send(StatusCodes.OK, exchange, "");
+            } else {
+                send(StatusCodes.INTERNAL_SERVER_ERROR, exchange, "Failed to execute discord webhook");
+            }
+        }
+    }
+
+    public void notificationsList(HttpServerExchange exchange) {
+        exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
+        exchange.setStatusCode(200);
+        exchange.getResponseSender().send(App.getGson().toJson(App.getDatabase().getNotifications(true)));
+        exchange.endExchange();
+    }
+
     private void sendBadRequest(HttpServerExchange exchange) {
         sendBadRequest(exchange, "");
     }
@@ -665,7 +816,7 @@ public class WebHandler {
                             user.getLogin().split(":")[0],
                             user.isOverridingCooldown(),
                             user.isChatbanned(),
-                            App.getDatabase().getChatbanReasonForUser(user.getId()),
+                            App.getDatabase().getChatBanReason(user.getId()),
                             user.isPermaChatbanned(),
                             user.getChatbanExpiryTime(),
                             user.isRenameRequested(true),
@@ -721,7 +872,7 @@ public class WebHandler {
             for (String r : reports) {
                 msg += r+"\n";
             }
-            App.getDatabase().addServerReport(msg, user.getId());
+            App.getDatabase().insertServerReport(user.getId(), msg);
         }
 
         String loginToken = App.getUserManager().logIn(user, ip);
@@ -969,17 +1120,17 @@ public class WebHandler {
                 .put(Headers.CONTENT_TYPE, "application/json")
                 .put(HttpString.tryFromString("Access-Control-Allow-Origin"), "*");
         if (user == null) {
-            App.getDatabase().addLookup(null, exchange.getAttachment(IPReader.IP));
+            App.getDatabase().insertLookup(null, exchange.getAttachment(IPReader.IP));
         } else {
-            App.getDatabase().addLookup(user.getId(), exchange.getAttachment(IPReader.IP));
+            App.getDatabase().insertLookup(user.getId(), exchange.getAttachment(IPReader.IP));
         }
 
         if (user == null || user.getRole().lessThan(Role.TRIALMOD)) {
-            DBPixelPlacementUser pp = App.getDatabase().getPixelAtUser(x, y);
-            exchange.getResponseSender().send(App.getGson().toJson(pp));
+            Optional<DBPixelPlacementUser> pp = App.getDatabase().getPixelAtUser(x, y);
+            exchange.getResponseSender().send(App.getGson().toJson(pp.orElse(null)));
         } else {
-            DBPixelPlacement pp = App.getDatabase().getPixelAt(x, y);
-            exchange.getResponseSender().send(App.getGson().toJson(pp));
+            Optional<DBPixelPlacement> pp = App.getDatabase().getPixelAt(x, y);
+            exchange.getResponseSender().send(App.getGson().toJson(pp.orElse(null)));
         }
     }
 
@@ -1029,13 +1180,13 @@ public class WebHandler {
             exchange.endExchange();
             return;
         }
-        DBPixelPlacement pxl = App.getDatabase().getPixelByID(id);
+        DBPixelPlacement pxl = App.getDatabase().getPixelByID(null, id);
         if (pxl.x != x || pxl.y != y) {
             exchange.setStatusCode(StatusCodes.BAD_REQUEST);
             exchange.endExchange();
             return;
         }
-        App.getDatabase().addReport(user.getId(), pxl.userId, id, x, y, msgq.getValue());
+        App.getDatabase().insertReport(user.getId(), pxl.userId, id, x, y, msgq.getValue());
         exchange.setStatusCode(200);
     }
 
@@ -1043,7 +1194,7 @@ public class WebHandler {
         exchange.getResponseHeaders()
                 .put(Headers.CONTENT_TYPE, "application/json")
                 .put(HttpString.tryFromString("Access-Control-Allow-Origin"), "*");
-        exchange.getResponseSender().send(App.getGson().toJson(new ServerUsers(App.getServer().getConnections().size())));
+        exchange.getResponseSender().send(App.getGson().toJson(new ServerUsers(App.getServer().getNonIdledUsersCount())));
     }
 
     public void whoami(HttpServerExchange exchange) {

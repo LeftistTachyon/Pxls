@@ -8,15 +8,15 @@
     <meta name="google-play-app" content="app-id=space.pxls.android">
     <style type="text/css">
         /** These MUST be here because the YUI compressor breaks calc() and is abandoned */
-        body.panel-right-open #ui .right {
+        body.panel-open.panel-right #ui .right {
             right: calc(30% + 10px);
         }
 
-        body.panel-left-open #ui .left {
+        body.panel-open.panel-left #ui .left {
             left: calc(30% + 10px);
         }
 
-        body.panel-left-open #ui .left, body.panel-left-open #ui .right, body.panel-right-open #ui .left, body.panel-right-open #ui .right {
+        body.panel-open #ui .left, body.panel-open #ui .right {
             bottom: 70px;
         }
     </style>
@@ -28,6 +28,9 @@
     <script src="moment.min.js"></script>
     <script src="crel.min.js"></script>
     <script src="anchorme.min.js"></script>
+    <script src="emoji-button.min.js"></script>
+    <script src="twemoji.min.js"></script>
+    <script src="emojiDB.min.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0"/>
 
     {{head}}
@@ -37,6 +40,13 @@
     <div class="left">
         <div class="panel-trigger" data-panel="info">
             <i class="fas fa-info-circle"></i>
+        </div>
+        <div class="panel-trigger" data-panel="faq">
+            <i class="fas fa-question-circle"></i>
+        </div>
+        <div class="panel-trigger" data-panel="notifications">
+            <i class="fas fa-bell" id="notifications-icon"></i>
+            <i class="fas fa-circle ping-counter" id="notifications-ping-counter"></i>
         </div>
     </div>
     <div class="mid"></div>
@@ -138,7 +148,10 @@
     <header class="panel-header">
         <div class="left"><i class="fas fa-times text-red panel-closer"></i></div>
         <h2><i class="fas fa-comment-alt fa-is-left fa-1_5x"></i>Chat</h2>
-        <div class="right"></div>
+        <div class="right">
+            <i class="fas fa-at" id="btnPings" title="Pings"></i>
+            <i class="fas fa-cogs" id="btnChatSettings" title="Settings"></i>
+        </div>
     </header>
     <div class="panel-body">
         <div class="chat-wrapper">
@@ -148,11 +161,23 @@
             </div>
             <div class="chat-controls">
                 <div class="chat-ratelimit-overlay"><span id="chat-ratelimit">3s</span></div>
+                <div id="jump-to-bottom" style="display: none;">
+                    <i class="fas fa-arrow-down fa-is-right" style="float: left; margin-top: 4px;"></i>
+                    <span>Jump To Bottom</span>
+                    <i class="fas fa-arrow-down fa-is-left" style="float: right; margin-top: 4px;"></i>
+                </div>
+                <div id="typeahead" style="display: none;">
+                    <p class="text-muted" data-dismiss="typeahead" style="cursor: pointer; padding-top: .25rem; padding-bottom: .25rem; margin: 0 0 .5rem 0rem; text-align: center; font-style: italic;">Tap here or press ESC to cancel</p>
+                    <ul></ul>
+                </div>
+                <i class="far fa-grin" id="emojiPanelTrigger"></i>
                 <label><textarea name="txtChatContent" id="txtChatContent" placeholder="Press ENTER to send..."></textarea></label>
+                <div class="bottom-banner" id="bottom-banner"></div>
             </div>
         </div>
     </div>
 </aside>
+
 
 <aside id="settings" data-panel="settings" class="panel right">
     <header class="panel-header">
@@ -241,7 +266,7 @@
                 <h2>Template</h2>
             </header>
             <div class="pad-wrapper">
-                <p>Hold down <kbd>Ctrl</kbd> to drag the template around</p>
+                <p>Hold down <kbd>Ctrl</kbd> (or <kbd>Option</kbd> on mac) to drag the template around</p>
                 <p><label>Use template: <input type="checkbox" id="template-use"></label></p>
                 <p><label>URL: <input type="text" id="template-url"></label></p>
                 <p><label>Opacity: <input type="range" min="0" max="1" step="0.01" id="template-opacity"></label></p>
@@ -272,23 +297,7 @@
             </header>
             <div class="pad-wrapper">
                 <div class="settingToggles">
-                    <label><input id="cbChatSettings24h" type="checkbox" />24 Hour Timestamps</label>
-                    <label><input id="cbChatSettingsBadgesToggle" type="checkbox" />Show pixel-placed badges</label>
-                    <label>Font Size: <input type="number" min="1" max="72" id="cbChatSettingsFontSize"> <button id="cbChatSettingsFontSizeConfirm" class="button"><i class="fas fa-check"></i></button></label>
-                    <label><input type="checkbox" id="cbChatSettingsPings" checked />Enable pings</label>
-                    <label>Default internal link click action:
-                        <select name="selInternalLinkAction" id="selInternalLinkAction">
-                            <option value="0">Ask</option>
-                            <option value="1">Open in new tab</option>
-                            <option value="2">Open in current tab</option>
-                            <option value="3">Only jump, don't replace template</option>
-                        </select>
-                    </label>
-                    <label>Username color
-                        <select name="selUsernameColor" id="selUsernameColor" style="font-family: monospace; font-size: 1.25rem; color: #FFFFFF; padding: 5px; border-radius: 5px;">
-                            <option value="-1" selected>Loading...</option>
-                        </select>
-                    </label>
+                    <p class="text-red">Moved to the top right of the chat panel. Click the cogs</p>
                 </div>
             </div>
         </article>
@@ -305,6 +314,26 @@
             </div>
         </article>
     </div>
+</aside>
+
+<aside id="faq" data-panel="faq" class="panel half-width left">
+    <header class="panel-header">
+        <div class="left"></div>
+        <h2><i class="fas fa-question-circle fa-is-left fa-1_5x"></i>Help</h2>
+        <div class="right"><i class="fas fa-times text-red panel-closer"></i></div>
+    </header>
+    <div class="panel-body">
+        {{faq}}
+    </div>
+</aside>
+
+<aside id="notifications" data-panel="notifications" class="panel left">
+    <header class="panel-header">
+        <div class="left"></div>
+        <h2><i class="fas fa-bell fa-is-left fa-1_5x"></i>Notifications</h2>
+        <div class="right"><i class="fas fa-times text-red panel-closer"></i></div>
+    </header>
+    <div class="panel-body"></div>
 </aside>
 
 <script src="pxls.js"></script>

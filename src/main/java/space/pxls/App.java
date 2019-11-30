@@ -112,8 +112,15 @@ public class App {
             @Override
             public void run() {
                 tickStackedPixels();
+                checkUserTimeout();
             }
         }, 0, 5000);
+        new Timer().schedule(new TimerTask() {
+            @Override
+            public void run() {
+                getServer().getPacketHandler().updateUserData();
+            }
+        }, 0, 600000); //10 minutes
 
         try {
             Path backupsDir = getStorageDir().resolve("backups/");
@@ -145,7 +152,7 @@ public class App {
                     Role role = Role.valueOf(token[2].toUpperCase());
                     user.setRole(role);
                     database.setUserRole(user, role);
-                    database.adminLogServer("Set "+user.getName()+"'s role to "+role.name());
+                    database.insertServerAdminLog("Set "+user.getName()+"'s role to "+role.name());
                     System.out.println("Set " + user.getName() + "'s role to " + role.name());
                 } else {
                     System.out.println("Cannot find user " + token[1]);
@@ -162,7 +169,7 @@ public class App {
                 if (user != null) {
                     String reason = line.substring(token[0].length() + token[1].length() + 2).trim();
                     user.ban(24 * 60 * 60, reason, null);
-                    database.adminLogServer(String.format("ban %s with reason: %s", user.getName(), reason));
+                    database.insertServerAdminLog(String.format("ban %s with reason: %s", user.getName(), reason));
                     System.out.println("Banned " + user.getName() + " for 24 hours.");
                 } else {
                     System.out.println("Cannot find user " + token[1]);
@@ -176,7 +183,7 @@ public class App {
                 if (user != null) {
                     String reason = line.substring(token[0].length() + token[1].length() + 2).trim();
                     user.permaban(reason, null);
-                    database.adminLogServer(String.format("permaban %s with reason: %s", user.getName(), reason));
+                    database.insertServerAdminLog(String.format("permaban %s with reason: %s", user.getName(), reason));
                     System.out.println("Permabanned " + user.getName());
                 } else {
                     System.out.println("Cannot find user " + token[1]);
@@ -190,7 +197,7 @@ public class App {
                 if (user != null) {
                     String reason = line.substring(token[0].length() + token[1].length() + 2).trim();
                     user.shadowban(reason, null);
-                    database.adminLogServer(String.format("shadowban %s with reason: %s", user.getName(), reason));
+                    database.insertServerAdminLog(String.format("shadowban %s with reason: %s", user.getName(), reason));
                     System.out.println("Shadowbanned " + user.getName());
                 } else {
                     System.out.println("Cannot find user " + token[1]);
@@ -203,7 +210,7 @@ public class App {
                 User user = userManager.getByName(token[1]);
                 if (user != null) {
                     user.unban(null, line.substring(token[0].length() + token[1].length() + 2).trim());
-                    database.adminLogServer("unban "+user.getName());
+                    database.insertServerAdminLog("unban "+user.getName());
                     System.out.println("Unbanned " + user.getName() + ".");
                 } else {
                     System.out.println("Cannot find user " + token[1]);
@@ -361,7 +368,7 @@ public class App {
                         }
 
                         if (toPurge > 0) {
-                            App.getDatabase().handlePurge(user, null, toPurge, reason, true);
+                            App.getDatabase().purgeChat(user, null, toPurge, reason, true);
                         } else {
                             System.out.printf("Invalid toPurge. Should be >0, got %s%n", toPurge);
                         }
@@ -409,6 +416,14 @@ public class App {
                 } else {
                     System.out.printf("%s USERNAME NEW_USERNAME%n", token[0]);
                 }
+            } else if (token[0].equalsIgnoreCase("idleCheck")) {
+                try {
+                    checkUserTimeout();
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            } else if (token[0].equalsIgnoreCase("sendUserData")) {
+                App.getServer().getPacketHandler().updateUserData();
             }
         } catch (RuntimeException e) {
             e.printStackTrace();
@@ -417,6 +432,7 @@ public class App {
 
     private static int stackMultiplier;
     private static int stackMaxStacked;
+    private static long userIdleTimeout;
 
     private static void loadConfig() {
         config = ConfigFactory.parseFile(new File("pxls.conf")).withFallback(ConfigFactory.load());
@@ -430,6 +446,7 @@ public class App {
         mapBackupTimer = new PxlsTimer(config.getDuration("board.backupInterval", TimeUnit.SECONDS));
         stackMultiplier = App.getConfig().getInt("stacking.cooldownMultiplier");
         stackMaxStacked = App.getConfig().getInt("stacking.maxStacked");
+        userIdleTimeout = App.getConfig().getDuration("userIdleTimeout", TimeUnit.MILLISECONDS);
 
         ChatFilter.getInstance().reload();
 
@@ -563,7 +580,7 @@ public class App {
                 forBroadcast.add(new ServerPlace.Pixel(rbPixel.toPixel.x, rbPixel.toPixel.y, rbPixel.toPixel.color));
                 database.putRollbackPixel(who, rbPixel.fromId, rbPixel.toPixel.id);
             } else { //else rollback to blank canvas
-                DBPixelPlacement fromPixel = database.getPixelByID(rbPixel.fromId);
+                DBPixelPlacement fromPixel = database.getPixelByID(null, rbPixel.fromId);
                 byte rollbackDefault = getDefaultColor(fromPixel.x, fromPixel.y);
                 putPixel(fromPixel.x, fromPixel.y, rollbackDefault, who, false, "", false, "rollback");
                 forBroadcast.add(new ServerPlace.Pixel(fromPixel.x, fromPixel.y, rollbackDefault));
@@ -612,7 +629,7 @@ public class App {
                     if (fromColor == 0xFF || fromColor == -1) {
                         database.putNukePixel(x, y, c);
                     } else if (pixelColor == fromColor) {
-                        database.putNukePixel(x, y, fromColor, c);
+                        database.putNukePixel(x, y, (int) fromColor, c);
                     }
                 }
             }
@@ -687,6 +704,26 @@ public class App {
         }
     }
 
+    public static void checkUserTimeout() {
+        Long loopStart = System.currentTimeMillis();
+        boolean anyIdled = false;
+        for (User user : server.getAuthedUsers().values()) {
+            if (user.isIdled()) continue;
+
+            Long toUse = user.getLastPixelTime() == 0L ? user.getInitialAuthTime() : user.getLastPixelTime();
+            Long delta = loopStart-toUse;
+            boolean isIdled = userIdleTimeout-delta <= 0;
+
+            if (isIdled) {
+                anyIdled = true;
+                user.setIdled(true);
+            }
+        }
+        if (anyIdled) {
+            App.getServer().getPacketHandler().updateUserData();
+        }
+    }
+
     public static void saveMap() {
         mapSaveTimer.run(App::saveMapForce);
         mapBackupTimer.run(App::saveMapBackup);
@@ -756,5 +793,9 @@ public class App {
 
     public static UndertowServer getServer() {
         return server;
+    }
+
+    public static long getUserIdleTimeout() {
+        return userIdleTimeout;
     }
 }

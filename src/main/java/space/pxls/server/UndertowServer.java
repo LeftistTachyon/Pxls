@@ -76,6 +76,10 @@ public class UndertowServer {
                 .addPrefixPath("/admin", new RoleGate(Role.TRIALMOD, Handlers.resource(new ClassPathResourceManager(App.class.getClassLoader(), "public/admin/"))
                         .setCacheTime(10)))
                 .addPrefixPath("/whoami", webHandler::whoami)
+                .addPrefixPath("/createNotification", new RoleGate(Role.DEVELOPER, webHandler::createNotification))
+                .addPrefixPath("/sendNotificationToDiscord", new RoleGate(Role.DEVELOPER, webHandler::sendNotificationToDiscord))
+                .addPrefixPath("/setNotificationExpired", new RoleGate(Role.DEVELOPER, webHandler::setNotificationExpired))
+                .addPrefixPath("/notifications", webHandler::notificationsList)
                 .addExactPath("/", webHandler::index)
                 .addExactPath("/index.html", webHandler::index)
                 .addPrefixPath("/", Handlers.resource(new ClassPathResourceManager(App.class.getClassLoader(), "public/"))
@@ -109,7 +113,7 @@ public class UndertowServer {
             if (agent == null) {
                 agent = "";
             }
-            user.setUseragent(agent);
+            user.setUserAgent(agent);
 
             userTaskExecutor.submit(new UserAuthedTask(channel, user, ip)); //ip at this point should have gone through all the checks to extract an actual IP from behind a reverse proxy
         }
@@ -176,8 +180,10 @@ public class UndertowServer {
 
     public void broadcast(Object obj) {
         String json = App.getGson().toJson(obj);
-        for (WebSocketChannel channel : connections) {
-            sendRaw(channel, json);
+        if (connections != null) {
+            for (WebSocketChannel channel : connections) {
+                sendRaw(channel, json);
+            }
         }
     }
 
@@ -190,9 +196,11 @@ public class UndertowServer {
                 shadowbannedConnection.addAll(u.getConnections());
             }
         }
-        for (WebSocketChannel channel : connections){
-            if (!shadowbannedConnection.contains(channel)){
-                sendRaw(channel, json);
+        if (connections != null) {
+            for (WebSocketChannel channel : connections){
+                if (!shadowbannedConnection.contains(channel)){
+                    sendRaw(channel, json);
+                }
             }
         }
     }
@@ -217,6 +225,14 @@ public class UndertowServer {
 
     public ConcurrentHashMap<Integer, User> getAuthedUsers() {
         return this.authedUsers;
+    }
+
+    public int getNonIdledUsersCount() {
+        int nonIdles = 0;
+        for (User value : App.getServer().getAuthedUsers().values()) {
+            if (!value.isIdled()) ++nonIdles;
+        }
+        return nonIdles;
     }
 
     public Undertow getServer() {

@@ -1,13 +1,14 @@
 package space.pxls.server
 
 import space.pxls.auth.AuthService
+import space.pxls.data.DBNotification
 
 data class ClientPlace(val type: String, val x: Int, val y: Int, val color: Int)
 data class ClientPlaceMaybe(val x: Int, val y: Int, val color: Int)
 data class ClientCaptcha(val token: String)
 data class ClientAdminCooldownOverride(val override: Boolean)
 data class ClientAdminMessage(val username: String, val message: String)
-data class ClientShadowBanMe(val app: String)
+data class ClientShadowBanMe(val app: String, val z:String?)
 data class ClientBanMe(val app: String)
 class ClientUndo()
 
@@ -72,4 +73,8 @@ data class ServerRename(val requested: Boolean) {
 
 data class ServerRenameSuccess(val newName: String) {
     val type = "rename_success"
+}
+
+data class ServerNotification(val notification: DBNotification) {
+    val type = "notification"
 }
